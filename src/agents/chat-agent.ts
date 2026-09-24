@@ -19,6 +19,7 @@ import type {
   PlaybookStepEvent
 } from "../workflows/playbook-workflow";
 
+import { denySubAgents, rejectClientStateChange } from "./guards";
 const MAX_STEPS = 10;
 const WORKFLOW_BINDING = "PLAYBOOK_WORKFLOW";
 
@@ -46,6 +47,16 @@ function replyWith(text: string) {
  */
 export class ChatAgent extends AIChatAgent<Env> {
   maxPersistedMessages = 100;
+
+  // ── Security: state changes are server-only; no sub-agent routes ───
+
+  validateStateChange(_next: unknown, source: unknown) {
+    rejectClientStateChange(source);
+  }
+
+  onBeforeSubAgent() {
+    return denySubAgents();
+  }
 
   async onChatMessage(_onFinish: unknown, options?: OnChatMessageOptions) {
     const { projectId, chatId } = parseChatAgentName(this.name);

@@ -13,6 +13,7 @@ import {
 } from "../plugins/catalog";
 import { BUNDLED_PLUGINS } from "../plugins/registry";
 
+import { denySubAgents, rejectClientStateChange } from "./guards";
 /** The effective plugin catalog (bundled plugins + Settings), read over RPC. */
 export async function getCatalog(env: Env): Promise<Catalog> {
   const settings = await getAgentByName(env.SettingsAgent, SETTINGS_NAME);
@@ -69,6 +70,16 @@ const OVERRIDE_FIELD = {
  */
 export class SettingsAgent extends Agent<Env, Overrides> {
   initialState = EMPTY_OVERRIDES;
+
+  // ── Security: state changes are server-only; no sub-agent routes ───
+
+  validateStateChange(_next: unknown, source: unknown) {
+    rejectClientStateChange(source);
+  }
+
+  onBeforeSubAgent() {
+    return denySubAgents();
+  }
 
   /** Bundled plugins with overrides applied. */
   catalog(): Catalog {

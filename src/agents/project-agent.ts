@@ -14,6 +14,7 @@ import {
   type PurchaseOrderPatch
 } from "../shared";
 
+import { denySubAgents, rejectClientStateChange } from "./guards";
 /** Tool results are returned to the LLM: success with details, or an error it can act on. */
 type ToolResult = { ok: true; [detail: string]: unknown } | { error: string };
 type ScheduleInput = z.infer<typeof scheduleSchema>;
@@ -26,6 +27,15 @@ const MAX_ACTIVITY = 50;
  * connected dashboards; ChatAgents call the domain methods over DO RPC.
  */
 export class ProjectAgent extends Agent<Env, ProjectState> {
+  // ── Security: state changes are server-only; no sub-agent routes ───
+
+  validateStateChange(_next: unknown, source: unknown) {
+    rejectClientStateChange(source);
+  }
+
+  onBeforeSubAgent() {
+    return denySubAgents();
+  }
   onStart() {
     // First run for this instance: load the project named after it from data/.
     if (!this.state?.project)
