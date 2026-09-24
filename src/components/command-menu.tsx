@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { PromptInfo } from "../plugins/registry";
+import { Badge } from "@cloudflare/kumo";
+import type { CommandInfo } from "../plugins/registry";
 import { parseSlashCommand } from "../shared";
 
 /** While the input is just "/partial-name", the commands that match it. */
-const matchCommands = (input: string, commands: PromptInfo[]) => {
+const matchCommands = (input: string, commands: CommandInfo[]) => {
   const partial = /^\/([a-z0-9-]*)$/.exec(input)?.[1];
   return partial === undefined
     ? []
@@ -11,12 +12,12 @@ const matchCommands = (input: string, commands: PromptInfo[]) => {
 };
 
 /** The known command at the start of the input, if any (for the hint line). */
-export const activeCommand = (input: string, commands: PromptInfo[]) => {
+export const activeCommand = (input: string, commands: CommandInfo[]) => {
   const parsed = parseSlashCommand(input);
   return parsed ? commands.find((c) => c.name === parsed.name) : undefined;
 };
 
-export const commandText = (command: PromptInfo) => `/${command.name} `;
+export const commandText = (command: CommandInfo) => `/${command.name} `;
 
 /**
  * Slash-command autocomplete state for a text input. `onKeyDown` returns true
@@ -24,8 +25,8 @@ export const commandText = (command: PromptInfo) => `/${command.name} `;
  */
 export function useCommandMenu(
   input: string,
-  commands: PromptInfo[],
-  onComplete: (command: PromptInfo, submit: boolean) => void
+  commands: CommandInfo[],
+  onComplete: (command: CommandInfo, submit: boolean) => void
 ) {
   const matches = useMemo(
     () => matchCommands(input, commands),
@@ -77,7 +78,7 @@ export function CommandMenu({
   onSelect
 }: {
   menu: ReturnType<typeof useCommandMenu>;
-  onSelect: (command: PromptInfo) => void;
+  onSelect: (command: CommandInfo) => void;
 }) {
   if (!menu.open) return null;
   return (
@@ -98,6 +99,9 @@ export function CommandMenu({
             className={`w-full flex items-baseline gap-2 px-3 py-2 rounded-lg text-left text-sm ${i === menu.highlight ? "bg-kumo-control" : ""}`}
           >
             <span className="font-mono text-kumo-default">/{c.name}</span>
+            {c.kind === "workflow" && (
+              <Badge variant="secondary">workflow</Badge>
+            )}
             {c.argumentHint && (
               <span className="font-mono text-xs text-kumo-subtle">
                 {c.argumentHint}

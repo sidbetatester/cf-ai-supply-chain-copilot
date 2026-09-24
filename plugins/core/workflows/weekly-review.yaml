@@ -1,0 +1,18 @@
+description: Weekly program review - assess schedule risk, log follow-up actions, then draft the leadership status report
+argumentHint: "[focus or context for this week]"
+steps:
+  - name: Assess schedule risk
+    skill: risk-mitigation
+    prompt: |
+      Assess schedule risk for the project. For every gating delivery give its slack in days and flag anything late or under 5 days of slack.
+      For each flagged delivery, recommend one mitigation with its trade-off.
+      Additional context from the user: $ARGUMENTS
+  - name: Log follow-up actions
+    tools: [addRaidItems]
+    prompt: |
+      For each mitigation recommended in the risk assessment, add one Action item to the RAID log (single addRaidItems call) with a clear owner role and a due date within the next 7 days.
+      Then list the actions you added.
+  - name: Draft status report
+    skill: status-report
+    prompt: |
+      Draft the weekly leadership status report, using the risk assessment and the follow-up actions from the earlier steps.

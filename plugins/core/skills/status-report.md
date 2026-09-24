@@ -11,4 +11,4 @@ Write the status report in this structure, using only data from the project stat
 5. **Decisions made**: recent Decision items.
 6. **Asks**: concrete decisions or help needed from leadership, each with a date.
 
-Keep it under 250 words. No speculation beyond the data.
+Keep it under 250 words. No speculation beyond the data. Write each markdown table with a header row, a separator row and one row per line.

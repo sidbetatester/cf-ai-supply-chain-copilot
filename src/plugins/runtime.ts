@@ -15,11 +15,14 @@ const ARGUMENTS = "$ARGUMENTS";
 export function expandSlashCommand(text: string): string {
   const command = parseSlashCommand(text);
   const prompt = command && listPrompts().find((p) => p.name === command.name);
-  if (!command || !prompt) return text;
-  if (prompt.body.includes(ARGUMENTS)) {
-    return prompt.body.replaceAll(ARGUMENTS, command.args || "(none provided)");
-  }
-  return command.args ? `${prompt.body}\n\n${command.args}` : prompt.body;
+  return command && prompt ? fillArguments(prompt.body, command.args) : text;
+}
+
+/** Substitute $ARGUMENTS in a prompt body, or append the args if it has no placeholder. */
+export function fillArguments(body: string, args: string): string {
+  if (body.includes(ARGUMENTS))
+    return body.replaceAll(ARGUMENTS, args || "(none provided)");
+  return args ? `${body}\n\n${args}` : body;
 }
 
 /** Expand slash commands in user messages before they are sent to the LLM. */
