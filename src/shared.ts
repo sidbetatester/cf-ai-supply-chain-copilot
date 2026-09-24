@@ -115,6 +115,14 @@ export interface ProjectState {
 
 export const DEFAULT_CHAT_TITLE = "New chat";
 
+/** "/name rest of text" → { name, args }; null if the text is not a slash command. */
+export function parseSlashCommand(
+  text: string
+): { name: string; args: string } | null {
+  const match = /^\/([a-z0-9][a-z0-9-]*)(?:\s+([\s\S]*))?$/.exec(text.trim());
+  return match ? { name: match[1], args: (match[2] ?? "").trim() } : null;
+}
+
 /** ChatAgent instances are named "<projectId>--<chatId>". */
 const CHAT_NAME_SEP = "--";
 export const chatAgentName = (projectId: string, chatId: string) =>

@@ -14,7 +14,14 @@ import {
   TruckIcon
 } from "@phosphor-icons/react";
 import type { ChatAgent } from "../agents/chat-agent";
-import { chatAgentName } from "../shared";
+import type { PromptInfo } from "../plugins/registry";
+import { chatAgentName, parseSlashCommand } from "../shared";
+import {
+  activeCommand,
+  CommandMenu,
+  commandText,
+  useCommandMenu
+} from "./command-menu";
 import { ToolPartView } from "./tool-part";
 
 // ── Voice input (browser Web Speech API, no backend needed) ──────────
@@ -69,21 +76,16 @@ function useVoiceInput(onTranscript: (text: string) => void) {
 
 // ── Chat ──────────────────────────────────────────────────────────────
 
-const SUGGESTED_PROMPTS = [
-  "What's our biggest schedule risk right now?",
-  "Which suppliers are on the critical path, and how much slack do we have?",
-  "Draft a weekly status report for leadership",
-  "Remind me in 1 minute to review the RAID log"
-];
-
 export function Chat({
   projectId,
   chatId,
+  commands,
   showDebug,
   onConnectionChange
 }: {
   projectId: string;
   chatId: string;
+  commands: PromptInfo[];
   showDebug: boolean;
   onConnectionChange: (connected: boolean) => void;
 }) {
@@ -136,6 +138,22 @@ export function Chat({
 
   const voice = useVoiceInput(setInput);
 
+  /** Put a command in the input, or run it right away if it takes no arguments. */
+  const pickCommand = useCallback(
+    (command: PromptInfo, submit: boolean) => {
+      if (submit) {
+        setInput("");
+        sendText(`/${command.name}`);
+      } else {
+        setInput(commandText(command));
+        textareaRef.current?.focus();
+      }
+    },
+    [sendText]
+  );
+  const menu = useCommandMenu(input, commands, pickCommand);
+  const hint = activeCommand(input, commands);
+
   return (
     <main className="flex-1 flex flex-col min-w-0">
       <div className="flex-1 overflow-y-auto">
@@ -144,19 +162,24 @@ export function Chat({
             <Empty
               icon={<TruckIcon size={32} />}
               title="Your program copilot"
-              description="Ask about schedule risk, paste meeting notes to update the RAID log, or draft a status report. Changes appear live on the dashboard."
+              description="Ask anything about the project, paste meeting notes, or type / for commands. Changes appear live on the dashboard."
               contents={
                 <div className="flex flex-col items-stretch gap-2 max-w-xl">
-                  {SUGGESTED_PROMPTS.map((prompt) => (
+                  {commands.map((command) => (
                     <Button
-                      key={prompt}
+                      key={command.name}
                       variant="outline"
                       size="sm"
-                      className="h-auto! py-2 text-left whitespace-normal justify-start"
+                      className="h-auto! py-2 text-left whitespace-normal justify-start gap-2"
                       disabled={isStreaming || !connected}
-                      onClick={() => sendText(prompt)}
+                      onClick={() =>
+                        pickCommand(command, !command.argumentHint)
+                      }
                     >
-                      {prompt}
+                      <span className="font-mono">/{command.name}</span>
+                      <span className="text-kumo-subtle">
+                        {command.description}
+                      </span>
                     </Button>
                   ))}
                 </div>
@@ -184,8 +207,18 @@ export function Chat({
             e.preventDefault();
             send();
           }}
-          className="max-w-3xl mx-auto px-5 py-4"
+          className="relative max-w-3xl mx-auto px-5 py-4"
         >
+          <CommandMenu menu={menu} onSelect={(c) => pickCommand(c, false)} />
+          {hint && (
+            <div className="mb-2 text-xs text-kumo-subtle">
+              <span className="font-mono text-kumo-default">/{hint.name}</span>
+              {hint.argumentHint && (
+                <span className="font-mono"> {hint.argumentHint}</span>
+              )}{" "}
+              · {hint.description}
+            </div>
+          )}
           <div className="flex items-end gap-3 rounded-xl border border-kumo-line bg-kumo-base p-3 shadow-sm focus-within:ring-2 focus-within:ring-kumo-ring focus-within:border-transparent transition-shadow">
             {voice.supported && (
               <Button
@@ -211,6 +244,7 @@ export function Chat({
               value={input}
               onValueChange={setInput}
               onKeyDown={(e) => {
+                if (menu.onKeyDown(e)) return;
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
                   send();
@@ -224,7 +258,7 @@ export function Chat({
               placeholder={
                 voice.listening
                   ? "Listening…"
-                  : "Ask about the project, or paste meeting notes…"
+                  : "Ask about the project, paste notes, or type / for commands…"
               }
               disabled={!connected || isStreaming}
               rows={1}
@@ -316,7 +350,7 @@ function MessageView({
           return isUser ? (
             <div key={key} className="flex justify-end">
               <div className="max-w-[85%] px-4 py-2.5 rounded-2xl rounded-br-md bg-kumo-contrast text-kumo-inverse leading-relaxed whitespace-pre-wrap">
-                {part.text}
+                <UserText text={part.text} />
               </div>
             </div>
           ) : (
@@ -337,5 +371,17 @@ function MessageView({
         return null;
       })}
     </div>
+  );
+}
+
+/** User text, with a leading slash command set in monospace. */
+function UserText({ text }: { text: string }) {
+  const command = parseSlashCommand(text);
+  if (!command) return <>{text}</>;
+  return (
+    <>
+      <span className="font-mono font-semibold">/{command.name}</span>
+      {command.args && ` ${command.args}`}
+    </>
   );
 }
