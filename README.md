@@ -69,7 +69,7 @@ plugins/<plugin>/
 ```
 
 - **Skills** have YAML frontmatter `description` and optional `always: true`. Always-on skills are part of every system prompt. Other skills are listed by name and description, and the agent loads one with the built-in `useSkill` tool when a task calls for it, so it always knows what exists without spending context on everything.
-- **Prompts** have frontmatter `description` and optional `argumentHint`; `$ARGUMENTS` in the body is replaced with what the user types after the command.
+- **Prompts** are slash commands: `prompts/notes.md` becomes `/notes`. Frontmatter has `description` and optional `argumentHint`; `$ARGUMENTS` in the body is replaced with what the user types after the command. Typing `/` in the chat opens an autocomplete menu (↑/↓, Tab or Enter; commands without arguments run on Enter). Chats show the command as typed; the server expands it before it reaches the LLM.
 - **Tools** are TypeScript files named after the tool (`tools/upsertPurchaseOrder.ts`). `execute(input, ctx)` receives Zod-validated input and a context with the project's `ProjectAgent` RPC stub. `needsApproval(input)` makes the user approve the call first.
 
 Plugins are bundled and validated at build time: bad frontmatter, a missing `plugin.json`, or a name used by two plugins fails startup naming the file. `GET /api/plugins` returns the catalog.

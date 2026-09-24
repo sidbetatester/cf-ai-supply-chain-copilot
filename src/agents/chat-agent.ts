@@ -10,7 +10,11 @@ import {
   streamText,
   wrapLanguageModel
 } from "ai";
-import { buildPluginPrompt, buildToolset } from "../plugins/runtime";
+import {
+  buildPluginPrompt,
+  buildToolset,
+  expandSlashCommands
+} from "../plugins/runtime";
 import { parseChatAgentName } from "../shared";
 
 const MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
@@ -61,7 +65,9 @@ ${JSON.stringify(snapshot)}
 
 ${getSchedulePrompt({ date: now })}`,
       messages: pruneMessages({
-        messages: await convertToModelMessages(this.messages),
+        messages: await convertToModelMessages(
+          expandSlashCommands(this.messages)
+        ),
         toolCalls: "before-last-2-messages",
         reasoning: "before-last-message"
       }),

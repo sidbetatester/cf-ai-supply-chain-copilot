@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAgent } from "agents/react";
 import { Badge, Button, Switch, Text } from "@cloudflare/kumo";
 import { Toasty, useKumoToastManager } from "@cloudflare/kumo/components/toast";
@@ -13,6 +13,7 @@ import {
   TruckIcon
 } from "@phosphor-icons/react";
 import type { ProjectAgent } from "./agents/project-agent";
+import type { PluginInfo, PromptInfo } from "./plugins/registry";
 import type { ProjectState, ProjectSummary } from "./shared";
 import { Chat } from "./components/chat";
 import { Dashboard } from "./components/dashboard";
@@ -46,6 +47,28 @@ function useHashRoute() {
     setRoute(next);
   }, []);
   return [route, navigate] as const;
+}
+
+// ── Read-only JSON API ────────────────────────────────────────────────
+
+function useApi<T>(path: string) {
+  const [state, setState] = useState<{ data?: T; error?: string }>({});
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch(path, { signal: controller.signal })
+      .then((r) =>
+        r.ok
+          ? (r.json() as Promise<T>)
+          : Promise.reject(new Error(`HTTP ${r.status}`))
+      )
+      .then((data) => setState({ data }))
+      .catch((e: Error) => {
+        if (!controller.signal.aborted)
+          setState({ error: `${path}: ${e.message}` });
+      });
+    return () => controller.abort();
+  }, [path]);
+  return state;
 }
 
 // ── Per-viewer preferences (best effort; storage may be unavailable) ──
@@ -103,11 +126,13 @@ function ThemeToggle() {
 
 function Workspace({
   projects,
+  commands,
   projectId,
   chatId,
   navigate
 }: {
   projects: ProjectSummary[];
+  commands: PromptInfo[];
   projectId: string;
   chatId: string | undefined;
   navigate: ReturnType<typeof useHashRoute>[1];
@@ -268,6 +293,7 @@ function Workspace({
               key={activeChat}
               projectId={projectId}
               chatId={activeChat}
+              commands={commands}
               showDebug={showDebug}
               onConnectionChange={setChatConnected}
             />
@@ -291,20 +317,15 @@ function Workspace({
 // ── App ───────────────────────────────────────────────────────────────
 
 function Shell() {
-  const [projects, setProjects] = useState<ProjectSummary[]>();
-  const [error, setError] = useState<string>();
+  const projectsApi = useApi<ProjectSummary[]>("/api/projects");
+  const pluginsApi = useApi<PluginInfo[]>("/api/plugins");
   const [route, navigate] = useHashRoute();
-
-  useEffect(() => {
-    fetch("/api/projects")
-      .then((r) =>
-        r.ok
-          ? (r.json() as Promise<ProjectSummary[]>)
-          : Promise.reject(new Error(`HTTP ${r.status}`))
-      )
-      .then(setProjects)
-      .catch((e: Error) => setError(e.message));
-  }, []);
+  const projects = projectsApi.data;
+  const error = projectsApi.error ?? pluginsApi.error;
+  const commands = useMemo(
+    () => pluginsApi.data?.flatMap((p) => p.prompts) ?? [],
+    [pluginsApi.data]
+  );
 
   const projectId =
     projects?.find((p) => p.id === route.projectId)?.id ?? projects?.[0]?.id;
@@ -314,8 +335,8 @@ function Shell() {
       navigate({ projectId }, { replace: true });
   }, [projectId, route.projectId, navigate]);
 
-  if (error) return <Centered>Couldn't load projects ({error}).</Centered>;
-  if (!projects) return <Centered>Loading…</Centered>;
+  if (error) return <Centered>Couldn't load the app ({error}).</Centered>;
+  if (!projects || !pluginsApi.data) return <Centered>Loading…</Centered>;
   if (!projectId)
     return (
       <Centered>
@@ -327,6 +348,7 @@ function Shell() {
     <Workspace
       key={projectId}
       projects={projects}
+      commands={commands}
       projectId={projectId}
       chatId={route.chatId}
       navigate={navigate}
