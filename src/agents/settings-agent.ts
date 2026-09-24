@@ -1,4 +1,5 @@
-import { Agent, callable, getAgentByName } from "agents";
+import { timingSafeEqual } from "node:crypto";
+import { Agent, callable, getAgentByName, getCurrentAgent } from "agents";
 import {
   EMPTY_OVERRIDES,
   itemKey,
@@ -7,6 +8,7 @@ import {
   SETTINGS_NAME,
   type Catalog,
   type ItemKind,
+  type SettingsAccess,
   type Overrides
 } from "../plugins/catalog";
 import { BUNDLED_PLUGINS } from "../plugins/registry";
@@ -32,6 +34,23 @@ function parseOverrides(value: unknown): Overrides {
   }
   return result.data;
 }
+
+/** Per-connection flag set by a successful unlock(); survives hibernation. */
+interface EditorConnectionState {
+  settingsEditor?: boolean;
+}
+
+const sha256 = async (text: string) =>
+  new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))
+  );
+
+/** Constant-time comparison (hashing first gives equal-length inputs). */
+async function keysMatch(given: string, expected: string) {
+  const [a, b] = await Promise.all([sha256(given), sha256(expected)]);
+  return timingSafeEqual(a, b);
+}
+
 const OVERRIDE_FIELD = {
   skill: "skills",
   prompt: "prompts",
@@ -43,6 +62,10 @@ const OVERRIDE_FIELD = {
  * and edited skill, prompt and workflow content. Edits are validated with the
  * same schemas as plugin files; state syncs live to the Settings UI, and
  * agents read the effective catalog over RPC on every turn.
+ *
+ * Settings are read-only for everyone. A connection may edit only after
+ * unlock() with the SETTINGS_ADMIN_KEY secret; without the secret, editing is
+ * disabled entirely.
  */
 export class SettingsAgent extends Agent<Env, Overrides> {
   initialState = EMPTY_OVERRIDES;
@@ -52,8 +75,55 @@ export class SettingsAgent extends Agent<Env, Overrides> {
     return resolveCatalog(BUNDLED_PLUGINS, this.state);
   }
 
+  // ── Access ────────────────────────────────────────────────────────
+
+  @callable()
+  access(): SettingsAccess {
+    return {
+      configured: !!this.env.SETTINGS_ADMIN_KEY,
+      unlocked: this.isEditor()
+    };
+  }
+
+  /** Allow the calling connection to edit Settings if the admin key matches. */
+  @callable()
+  async unlock(key: string): Promise<SettingsAccess> {
+    const expected = this.env.SETTINGS_ADMIN_KEY;
+    if (!expected)
+      throw new Error(
+        "Editing is disabled: no admin key is configured for this deployment."
+      );
+    if (typeof key !== "string" || !(await keysMatch(key, expected))) {
+      throw new Error("That admin key isn't correct.");
+    }
+    const { connection } = getCurrentAgent();
+    connection?.setState((prev: EditorConnectionState | null) => ({
+      ...prev,
+      settingsEditor: true
+    }));
+    return this.access();
+  }
+
+  private isEditor() {
+    const state = getCurrentAgent().connection?.state as
+      | EditorConnectionState
+      | null
+      | undefined;
+    return !!this.env.SETTINGS_ADMIN_KEY && state?.settingsEditor === true;
+  }
+
+  private requireEditor() {
+    if (!this.isEditor())
+      throw new Error(
+        "Settings are read-only. Unlock editing with the admin key."
+      );
+  }
+
+  // ── Edits (require an unlocked connection) ────────────────────────
+
   @callable()
   setEnabled(kind: ItemKind, name: string, enabled: boolean) {
+    this.requireEditor();
     this.assertExists(kind, name);
     const key = itemKey(kind, name);
     const disabled = this.state.disabled.filter((k) => k !== key);
@@ -66,6 +136,7 @@ export class SettingsAgent extends Agent<Env, Overrides> {
   /** Replace the override for a skill, prompt or workflow (fields not given keep the bundled value). */
   @callable()
   update(kind: EditableKind, name: string, fields: Record<string, unknown>) {
+    this.requireEditor();
     this.assertExists(kind, name);
     const field = OVERRIDE_FIELD[kind];
     const next = parseOverrides({
@@ -85,6 +156,7 @@ export class SettingsAgent extends Agent<Env, Overrides> {
   /** Drop all edits for one item and re-enable it. */
   @callable()
   reset(kind: ItemKind, name: string) {
+    this.requireEditor();
     this.assertExists(kind, name);
     const next = structuredClone(this.state);
     next.disabled = next.disabled.filter((k) => k !== itemKey(kind, name));
@@ -95,6 +167,7 @@ export class SettingsAgent extends Agent<Env, Overrides> {
 
   @callable()
   resetAll() {
+    this.requireEditor();
     this.setState(EMPTY_OVERRIDES);
   }
 
