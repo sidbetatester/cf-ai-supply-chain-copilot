@@ -2,13 +2,13 @@
 import { getSchedulePrompt } from "agents/schedule";
 import { simulateStreamingMiddleware, wrapLanguageModel } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
-import type { ProjectAgent } from "./agents/project-agent";
+import type { ProjectStore } from "./project-store";
 import type { Catalog } from "./plugins/catalog";
 import { buildPluginPrompt } from "./plugins/runtime";
 
 export const MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
-export type ProjectSnapshot = ReturnType<ProjectAgent["snapshot"]>;
+export type ProjectSnapshot = ReturnType<ProjectStore["snapshot"]>;
 
 export function createModel(env: Env, sessionAffinity?: string) {
   const workersai = createWorkersAI({ binding: env.AI });

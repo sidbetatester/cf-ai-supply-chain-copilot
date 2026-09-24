@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useAgent } from "agents/react";
-import { useAgentChat } from "@cloudflare/ai-chat/react";
-import { isToolUIPart, type UIMessage } from "ai";
+import { useChat } from "@ai-sdk/react";
+import {
+  DefaultChatTransport,
+  isToolUIPart,
+  lastAssistantMessageIsCompleteWithApprovalResponses,
+  type UIMessage
+} from "ai";
 import { Badge, Button, Empty, InputArea } from "@cloudflare/kumo";
 import { Streamdown } from "streamdown";
 import { code } from "@streamdown/code";
@@ -13,9 +17,10 @@ import {
   StopIcon,
   TruckIcon
 } from "@phosphor-icons/react";
-import type { ChatAgent } from "../agents/chat-agent";
-import type { CommandInfo } from "../plugins/catalog";
-import { chatAgentName, parseSlashCommand } from "../shared";
+import { loadMessages, saveMessages } from "../browser/storage";
+import type { AppUIMessage } from "../chat-api";
+import type { CommandInfo, EffectiveWorkflow } from "../plugins/catalog";
+import { parseSlashCommand, type ProjectState } from "../shared";
 import {
   activeCommand,
   CommandMenu,
@@ -34,10 +39,14 @@ const safeUrl = (url: string) =>
 type SpeechRecognitionLike = {
   lang: string;
   interimResults: boolean;
+  continuous: boolean;
   onresult: (e: {
-    results: ArrayLike<ArrayLike<{ transcript: string }>>;
+    results: ArrayLike<
+      ArrayLike<{ transcript: string }> & { isFinal: boolean }
+    >;
   }) => void;
   onend: () => void;
+  onerror: (e: { error: string }) => void;
   start: () => void;
   stop: () => void;
 };
@@ -50,95 +59,350 @@ function getSpeechRecognition(): (new () => SpeechRecognitionLike) | undefined {
     | undefined;
 }
 
-function useVoiceInput(onTranscript: (text: string) => void) {
+/** Back-to-back sessions with no speech before dictation turns itself off. */
+const MAX_EMPTY_SESSIONS = 3;
+
+const joinText = (a: string, b: string) => (a && b ? `${a} ${b}` : a || b);
+
+/**
+ * Dictation that appends to whatever is already typed. Recognition runs
+ * continuously; if the browser ends the session after a silence, it restarts
+ * (keeping everything so far) until the user turns the mic off.
+ */
+function useVoiceInput(getText: () => string, setText: (text: string) => void) {
   const [listening, setListening] = useState(false);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const wantRef = useRef(false);
   const SpeechRecognition = getSpeechRecognition();
 
   const toggle = useCallback(() => {
     if (!SpeechRecognition) return;
-    if (listening) {
+    if (wantRef.current) {
+      wantRef.current = false;
       recognitionRef.current?.stop();
       return;
     }
-    const rec = new SpeechRecognition();
-    rec.lang = "en-US";
-    rec.interimResults = true;
-    rec.onresult = (e) =>
-      onTranscript(
-        Array.from(e.results)
-          .map((r) => r[0].transcript)
-          .join("")
-      );
-    rec.onend = () => setListening(false);
-    recognitionRef.current = rec;
+    wantRef.current = true;
     setListening(true);
-    rec.start();
-  }, [SpeechRecognition, listening, onTranscript]);
+    // Stop if the browser keeps ending sessions without hearing anything.
+    let emptySessions = 0;
+
+    const startSession = () => {
+      const base = getText().trimEnd();
+      let heard = false;
+      const rec = new SpeechRecognition();
+      rec.lang = navigator.language || "en-US";
+      rec.interimResults = true;
+      rec.continuous = true;
+      rec.onresult = (e) => {
+        heard = true;
+        const spoken = Array.from(e.results)
+          .map((r) => r[0].transcript.trim())
+          .filter(Boolean)
+          .join(" ");
+        setText(joinText(base, spoken));
+      };
+      rec.onerror = (e) => {
+        // Permission or hardware problems stop dictation; silence just restarts.
+        if (e.error !== "no-speech" && e.error !== "aborted")
+          wantRef.current = false;
+      };
+      rec.onend = () => {
+        emptySessions = heard ? 0 : emptySessions + 1;
+        if (wantRef.current && emptySessions < MAX_EMPTY_SESSIONS)
+          startSession();
+        else {
+          wantRef.current = false;
+          setListening(false);
+        }
+      };
+      recognitionRef.current = rec;
+      rec.start();
+    };
+    startSession();
+  }, [SpeechRecognition, getText, setText]);
+
+  useEffect(
+    () => () => {
+      wantRef.current = false;
+      recognitionRef.current?.stop();
+    },
+    []
+  );
 
   return { supported: !!SpeechRecognition, listening, toggle };
 }
-
 // ── Chat ──────────────────────────────────────────────────────────────
 
-export function Chat({
-  projectId,
-  chatId,
-  commands,
-  showDebug,
-  onConnectionChange
-}: {
+interface ChatProps {
   projectId: string;
   chatId: string;
+  /** This browser's copy of the project; sent with every request. */
+  project: ProjectState;
+  onProjectChange: (state: ProjectState) => void;
+  /** Called with the first message so the chat can be titled. */
+  onFirstMessage: (text: string) => void;
   commands: CommandInfo[];
+  workflows: EffectiveWorkflow[];
   showDebug: boolean;
-  onConnectionChange: (connected: boolean) => void;
-}) {
-  const [connected, setConnected] = useState(false);
+}
+
+/**
+ * Latest project (and change handler) for each open chat. Read when a request
+ * is sent or a tool update arrives, outside React rendering.
+ */
+const liveChats = new Map<
+  string,
+  { project: ProjectState; onProjectChange: (state: ProjectState) => void }
+>();
+const transports = new Map<string, DefaultChatTransport<AppUIMessage>>();
+
+/** One transport per chat; every request carries this browser's copy of the project. */
+function transportFor(key: string) {
+  let transport = transports.get(key);
+  if (!transport) {
+    transport = new DefaultChatTransport<AppUIMessage>({
+      api: "/api/chat",
+      body: () => ({ project: liveChats.get(key)?.project })
+    });
+    transports.set(key, transport);
+  }
+  return transport;
+}
+const textMessage = (
+  role: "user" | "assistant",
+  text: string
+): AppUIMessage => ({
+  id: crypto.randomUUID(),
+  role,
+  parts: [{ type: "text", text }]
+});
+
+const errorText = async (response: Response) => {
+  try {
+    return (
+      ((await response.json()) as { error?: string }).error ??
+      `HTTP ${response.status}`
+    );
+  } catch {
+    return `HTTP ${response.status}`;
+  }
+};
+
+/** Loads the chat's saved messages from this browser, then shows it. */
+export function Chat(props: ChatProps) {
+  const [initial, setInitial] = useState<AppUIMessage[]>();
+  useEffect(() => {
+    let cancelled = false;
+    loadMessages<AppUIMessage>(props.projectId, props.chatId).then(
+      (m) => !cancelled && setInitial(m)
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [props.projectId, props.chatId]);
+  if (!initial)
+    return (
+      <div className="flex-1 flex items-center justify-center text-kumo-inactive text-sm">
+        Loading chat…
+      </div>
+    );
+  return <ChatView {...props} initialMessages={initial} />;
+}
+
+function ChatView({
+  projectId,
+  chatId,
+  project,
+  onProjectChange,
+  onFirstMessage,
+  commands,
+  workflows,
+  showDebug,
+  initialMessages
+}: ChatProps & { initialMessages: AppUIMessage[] }) {
   const [input, setInput] = useState("");
+  const [runningWorkflow, setRunningWorkflow] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const agent = useAgent<ChatAgent>({
-    agent: "ChatAgent",
-    name: chatAgentName(projectId, chatId),
-    onOpen: useCallback(() => setConnected(true), []),
-    onClose: useCallback(() => setConnected(false), [])
+  // Requests and tool updates read the latest project from the registry.
+  const liveKey = `${projectId}:${chatId}`;
+  useEffect(() => {
+    liveChats.set(liveKey, { project, onProjectChange });
+  }, [liveKey, project, onProjectChange]);
+  useEffect(() => () => void liveChats.delete(liveKey), [liveKey]);
+  const [transport] = useState(() => transportFor(liveKey));
+  const live = useCallback(() => liveChats.get(liveKey), [liveKey]);
+
+  const {
+    messages,
+    setMessages,
+    sendMessage,
+    addToolApprovalResponse,
+    stop,
+    status,
+    error,
+    clearError,
+    regenerate
+  } = useChat<AppUIMessage>({
+    id: `${projectId}:${chatId}`,
+    messages: initialMessages,
+    transport,
+    // Project changes made by tools arrive as transient data parts.
+    onData: (part) => {
+      if (part.type === "data-project") {
+        const current = live();
+        if (current) {
+          current.project = part.data;
+          current.onProjectChange(part.data);
+        }
+      }
+    },
+    // After an approval decision, send it back so the agent can continue.
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses
   });
 
-  useEffect(
-    () => onConnectionChange(connected),
-    [connected, onConnectionChange]
-  );
+  const busy =
+    status === "streaming" || status === "submitted" || runningWorkflow;
 
-  const { messages, sendMessage, addToolApprovalResponse, stop, status } =
-    useAgentChat({ agent });
-
-  const isStreaming = status === "streaming" || status === "submitted";
+  // Save the conversation in this browser whenever a turn settles.
+  useEffect(() => {
+    if (status === "ready" || status === "error")
+      void saveMessages(projectId, chatId, messages);
+  }, [messages, status, projectId, chatId]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
   useEffect(() => {
-    if (!isStreaming) textareaRef.current?.focus();
-  }, [isStreaming]);
+    if (!busy) textareaRef.current?.focus();
+  }, [busy]);
+
+  /** Run a workflow's steps in order; each step's result is posted as it finishes. */
+  const runWorkflow = useCallback(
+    async (workflow: EffectiveWorkflow, args: string, commandText: string) => {
+      setRunningWorkflow(true);
+      const steps = workflow.steps;
+      let history = [
+        ...messages,
+        textMessage("user", commandText),
+        textMessage(
+          "assistant",
+          `▶️ Running workflow **/${workflow.name}** (${steps.length} step${steps.length === 1 ? "" : "s"}):\n\n${steps.map((s, i) => `${i + 1}. ${s.name}`).join("\n")}`
+        )
+      ];
+      setMessages(history);
+      const previous: { name: string; text: string }[] = [];
+      try {
+        for (let step = 0; step < steps.length; step++) {
+          const response = await fetch("/api/workflow-step", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              project: live()?.project,
+              workflow: workflow.name,
+              step,
+              args,
+              previous
+            })
+          });
+          if (!response.ok) throw new Error(await errorText(response));
+          const result = (await response.json()) as {
+            name: string;
+            text: string;
+            project: ProjectState;
+          };
+          const current = live();
+          if (current) current.project = result.project;
+          current?.onProjectChange(result.project);
+          previous.push({ name: result.name, text: result.text });
+          history = [
+            ...history,
+            textMessage(
+              "assistant",
+              `**Step ${step + 1}/${steps.length} · ${result.name}**\n\n${result.text}`
+            )
+          ];
+          setMessages(history);
+        }
+        history = [
+          ...history,
+          textMessage(
+            "assistant",
+            `✅ Workflow **/${workflow.name}** complete.`
+          )
+        ];
+      } catch (e) {
+        history = [
+          ...history,
+          textMessage(
+            "assistant",
+            `⚠️ Workflow stopped: ${e instanceof Error ? e.message : String(e)}`
+          )
+        ];
+      }
+      setMessages(history);
+      await saveMessages(projectId, chatId, history);
+      setRunningWorkflow(false);
+    },
+    [messages, setMessages, projectId, chatId, live]
+  );
 
   const sendText = useCallback(
-    (text: string) =>
-      sendMessage({ role: "user", parts: [{ type: "text", text }] }),
-    [sendMessage]
+    (text: string) => {
+      if (messages.length === 0) onFirstMessage(text);
+      clearError();
+      const command = parseSlashCommand(text);
+      const workflow =
+        command && workflows.find((w) => w.name === command.name);
+      if (workflow) {
+        if (!workflow.enabled || workflow.problems.length > 0) {
+          setMessages([
+            ...messages,
+            textMessage("user", text),
+            textMessage(
+              "assistant",
+              workflow.enabled
+                ? `Workflow **/${workflow.name}** can't run as configured:\n\n${workflow.problems.map((p) => `- ${p}`).join("\n")}`
+                : `Workflow **/${workflow.name}** is turned off in Settings.`
+            )
+          ]);
+          return;
+        }
+        void runWorkflow(workflow, command.args, text);
+        return;
+      }
+      void sendMessage({ role: "user", parts: [{ type: "text", text }] });
+    },
+    [
+      messages,
+      onFirstMessage,
+      clearError,
+      workflows,
+      setMessages,
+      runWorkflow,
+      sendMessage
+    ]
   );
 
   const send = useCallback(() => {
     const text = input.trim();
-    if (!text || isStreaming) return;
+    if (!text || busy) return;
     setInput("");
     sendText(text);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
-  }, [input, isStreaming, sendText]);
+  }, [input, busy, sendText]);
 
-  const voice = useVoiceInput(setInput);
+  const inputRef = useRef(input);
+  useEffect(() => {
+    inputRef.current = input;
+  }, [input]);
+  const voice = useVoiceInput(
+    useCallback(() => inputRef.current, []),
+    setInput
+  );
 
   /** Put a command in the input, or run it right away if it takes no arguments. */
   const pickCommand = useCallback(
@@ -155,7 +419,8 @@ export function Chat({
   );
   const menu = useCommandMenu(input, commands, pickCommand);
   const hint = activeCommand(input, commands);
-
+  const connected = true;
+  const isStreaming = busy;
   return (
     <main className="flex-1 flex flex-col min-w-0">
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
@@ -212,6 +477,26 @@ export function Chat({
               addToolApprovalResponse={addToolApprovalResponse}
             />
           ))}
+
+          {error && !busy && (
+            <div
+              role="alert"
+              className="flex flex-wrap items-center gap-3 rounded-xl px-4 py-3 text-sm bg-red-500/10 text-red-700 dark:text-red-300 ring-1 ring-red-500/20"
+            >
+              <span className="flex-1 min-w-0 break-words">
+                {error.message || "Something went wrong."}
+              </span>
+              <Tip content="Send the last message again">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => regenerate()}
+                >
+                  Retry
+                </Button>
+              </Tip>
+            </div>
+          )}
 
           <div ref={messagesEndRef} />
         </div>

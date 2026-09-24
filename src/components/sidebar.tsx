@@ -8,13 +8,18 @@ import {
   PencilSimpleIcon,
   PlusIcon,
   SidebarSimpleIcon,
-  TrashIcon
+  TrashIcon,
+  UploadSimpleIcon
 } from "@phosphor-icons/react";
+import type { ProjectOrigin } from "../browser/hooks";
 import type { ChatMeta, ProjectSummary } from "../shared";
 import { Tip } from "./tip";
 
+/** A demo project (from the server) or one imported into this browser. */
+export type SidebarProject = ProjectSummary & { origin: ProjectOrigin };
+
 interface SidebarProps {
-  projects: ProjectSummary[];
+  projects: SidebarProject[];
   activeProjectId: string;
   chats: ChatMeta[];
   activeChatId: string | undefined;
@@ -23,10 +28,10 @@ interface SidebarProps {
   onSelectProject: (id: string) => void;
   onSelectChat: (id: string) => void;
   onNewChat: () => void;
-  /** Whether this browser may rename/delete the chat (it created it). */
-  canManageChat: (chat: ChatMeta) => boolean;
   onRenameChat: (id: string, title: string) => void;
   onDeleteChat: (id: string) => void;
+  onImportProject: () => void;
+  onDeleteProject: (id: string) => void;
 }
 
 export function Sidebar(props: SidebarProps) {
@@ -93,6 +98,21 @@ export function Sidebar(props: SidebarProps) {
             <ProjectItem key={p.id} project={p} {...props} />
           ))}
         </ul>
+        <div className="border-t border-kumo-line p-2">
+          <Tip
+            content="Add your own project from JSON and CSV files (saved in this browser only)"
+            side="right"
+            block
+          >
+            <button
+              type="button"
+              onClick={props.onImportProject}
+              className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-sm text-kumo-subtle hover:bg-kumo-control"
+            >
+              <UploadSimpleIcon size={14} /> Import project
+            </button>
+          </Tip>
+        </div>
       </nav>
     </>
   );
@@ -106,14 +126,19 @@ function ProjectItem({
   onSelectProject,
   onSelectChat,
   onNewChat,
-  canManageChat,
   onRenameChat,
-  onDeleteChat
-}: SidebarProps & { project: ProjectSummary }) {
+  onDeleteChat,
+  onDeleteProject
+}: SidebarProps & { project: SidebarProject }) {
   const active = project.id === activeProjectId;
+  const imported = project.origin === "imported";
   return (
-    <li className="min-w-0">
-      <Tip content={`${project.name} · ${project.site}`} side="right" block>
+    <li className="group/project relative min-w-0">
+      <Tip
+        content={`${project.name} · ${project.site}${imported ? " · imported, in this browser only" : " · demo project"}`}
+        side="right"
+        block
+      >
         <button
           type="button"
           onClick={() => onSelectProject(project.id)}
@@ -127,8 +152,34 @@ function ProjectItem({
             className="shrink-0"
           />
           <span className="truncate">{project.name}</span>
+          {imported && (
+            <span className="ml-auto shrink-0 text-[10px] uppercase tracking-wide text-kumo-subtle pr-6">
+              local
+            </span>
+          )}
         </button>
       </Tip>
+      {imported && (
+        <div className="absolute right-1 top-1 hidden group-hover/project:flex group-focus-within/project:flex">
+          <Tip content="Delete this imported project and its chats from this browser">
+            <Button
+              variant="ghost"
+              shape="square"
+              size="xs"
+              aria-label={`Delete project ${project.name}`}
+              icon={<TrashIcon size={12} />}
+              onClick={() => {
+                if (
+                  confirm(
+                    `Delete "${project.name}" and all its chats from this browser? This can't be undone.`
+                  )
+                )
+                  onDeleteProject(project.id);
+              }}
+            />
+          </Tip>
+        </div>
+      )}
       {active && (
         <ul className="ml-5 mt-0.5 space-y-0.5">
           <li>
@@ -147,7 +198,6 @@ function ProjectItem({
               key={chat.id}
               chat={chat}
               active={chat.id === activeChatId}
-              canManage={canManageChat(chat)}
               onSelect={() => onSelectChat(chat.id)}
               onRename={(title) => onRenameChat(chat.id, title)}
               onDelete={() => onDeleteChat(chat.id)}
@@ -162,14 +212,12 @@ function ProjectItem({
 function ChatItem({
   chat,
   active,
-  canManage,
   onSelect,
   onRename,
   onDelete
 }: {
   chat: ChatMeta;
   active: boolean;
-  canManage: boolean;
   onSelect: () => void;
   onRename: (title: string) => void;
   onDelete: () => void;
@@ -201,54 +249,50 @@ function ChatItem({
   return (
     <li className="group relative min-w-0">
       <Tip
-        content={
-          canManage ? `${chat.title} · double-click to rename` : chat.title
-        }
+        content={`${chat.title} · double-click to rename`}
         side="right"
         block
       >
         <button
           type="button"
           onClick={onSelect}
-          onDoubleClick={() => canManage && setEditing(true)}
+          onDoubleClick={() => setEditing(true)}
           aria-current={active ? "page" : undefined}
-          className={`w-full min-w-0 flex items-center gap-2 px-2 py-1.5 ${canManage ? "pr-14" : ""} rounded-lg text-left text-sm ${active ? "bg-kumo-control text-kumo-default" : "text-kumo-subtle hover:bg-kumo-control"}`}
+          className={`w-full min-w-0 flex items-center gap-2 px-2 py-1.5 pr-14 rounded-lg text-left text-sm ${active ? "bg-kumo-control text-kumo-default" : "text-kumo-subtle hover:bg-kumo-control"}`}
         >
           <ChatCircleIcon size={14} className="shrink-0" />
           <span className="truncate">{chat.title}</span>
         </button>
       </Tip>
-      {canManage && (
-        <div className="absolute right-1 top-1/2 -translate-y-1/2 hidden group-hover:flex group-focus-within:flex">
-          <Tip content="Rename this chat">
-            <Button
-              variant="ghost"
-              shape="square"
-              size="xs"
-              aria-label={`Rename ${chat.title}`}
-              icon={<PencilSimpleIcon size={12} />}
-              onClick={() => setEditing(true)}
-            />
-          </Tip>
-          <Tip content="Delete this chat and its messages">
-            <Button
-              variant="ghost"
-              shape="square"
-              size="xs"
-              aria-label={`Delete ${chat.title}`}
-              icon={<TrashIcon size={12} />}
-              onClick={() => {
-                if (
-                  confirm(
-                    `Delete "${chat.title}"? Its messages will be permanently removed.`
-                  )
+      <div className="absolute right-1 top-1/2 -translate-y-1/2 hidden group-hover:flex group-focus-within:flex">
+        <Tip content="Rename this chat">
+          <Button
+            variant="ghost"
+            shape="square"
+            size="xs"
+            aria-label={`Rename ${chat.title}`}
+            icon={<PencilSimpleIcon size={12} />}
+            onClick={() => setEditing(true)}
+          />
+        </Tip>
+        <Tip content="Delete this chat and its messages">
+          <Button
+            variant="ghost"
+            shape="square"
+            size="xs"
+            aria-label={`Delete ${chat.title}`}
+            icon={<TrashIcon size={12} />}
+            onClick={() => {
+              if (
+                confirm(
+                  `Delete "${chat.title}"? Its messages will be permanently removed.`
                 )
-                  onDelete();
-              }}
-            />
-          </Tip>
-        </div>
-      )}
+              )
+                onDelete();
+            }}
+          />
+        </Tip>
+      </div>
     </li>
   );
 }

@@ -23,12 +23,12 @@
   },
   "dependencies": {
     "@ai-sdk/react": "^3.0.293",
-    "@cloudflare/ai-chat": "^0.12.0",
     "@cloudflare/kumo": "^2.6.0",
     "@phosphor-icons/react": "^2.1.10",
     "@streamdown/code": "^1.1.1",
     "agents": "^0.24.0",
     "ai": "^6.0.197",
+    "idb-keyval": "^6.3.0",
     "papaparse": "^5.7.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
@@ -58,8 +58,7 @@
     "core-js-pure@3.50.0": true,
     "esbuild@0.28.1": true,
     "esbuild@0.28.2": true,
-    "workerd@1.20260921.1": true,
-    "sharp@0.35.4": true,
-    "fsevents@2.3.3": true
+    "fsevents@2.3.3": true,
+    "workerd@1.20260923.1": true
   }
 }
