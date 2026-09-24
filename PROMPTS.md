@@ -101,6 +101,20 @@ The fresh resolve also pulled in `@cloudflare/ai-chat` 0.9.4, which broke chat c
 - **Deployed** to `workers.dev` and verified in production: chat, tool calls, and a full `/weekly-review` Cloudflare Workflow run.
 - **Docs:** updated this file and the README.
 
+## 9. Create new plugin content, security and UX review
+
+> where is the ability to add new skills, commands, workflows, tools? · yes, proceed
+
+**Outcome:** a **New** button in Settings creates custom skills, commands and workflows in a built-in "Custom" plugin, validated like plugin files, with name-clash and dependency checks. Tools stay code-only, since running arbitrary code from a browser would be unsafe.
+
+> Why is this distorted, flowing out of the screen instead of perfectly aligning? did you verify the UI/UX properly? · Also, add tool tips to everything that is clickable so the learning curve for the user is almost zero. · Verify there are no security or privacy issues in the current form of the code for an open repository. · check if we completed all planned features and functionality, if anything is missing, line up for completion
+
+**Outcome:**
+
+- **Security review:** a separate reviewer agent found a **critical** issue. Clients could overwrite agent state (including Settings) with a raw WebSocket frame, bypassing the admin key. It was hot-fixed and verified in production, followed by hardening: chat ownership, an admin-only data reset, rate limits and size caps, unlock throttling, safe markdown rendering, a strict CSP and least-privilege CI.
+- **Layout:** fixed the overflowing command cards, the dashboard and sidebar breakpoints (the sidebar is now a drawer on phones), and table wrapping. Verified by measurement at 375, 768, 1024, 1280 and 1440 px.
+- **Tooltips:** added to every clickable control, including disabled ones, where they explain why the control is unavailable.
+
 ---
 
 ## Runtime prompts (what the agent itself is told)

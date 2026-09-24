@@ -100,11 +100,25 @@ The gear icon opens **Settings**, which customizes plugins without touching thei
 
 - **Enable or disable** any plugin, skill, command, workflow or tool. Disabled items disappear from the agent's prompt, toolset and `/` menu, and the server refuses disabled commands.
 - **Edit** skill instructions (and whether they're always on), command prompts, and workflow steps: add, remove and reorder steps, and pick each step's skill and tools.
+- **Create** new skills, commands and workflows with **New** (they live in the built-in **Custom** plugin, go through the same validation as plugin files, and can be deleted). Tools are code, so new tools are added as files in `plugins/<plugin>/tools/` (see [Plugins](#plugins)).
 - **Reset** one item or everything to the plugin defaults.
 
 Plugin files stay the defaults. A `SettingsAgent` Durable Object stores only overrides, validated with the same Zod schemas as plugin files. One pure resolver (`resolveCatalog` in `src/plugins/catalog.ts`) applies them, on the server for every chat turn and workflow step, and in the browser for the live `/` menu and Settings UI, so both always agree. Workflows are re-checked against the effective catalog: disabling a tool a step uses marks the workflow as unable to run until it's fixed. A running workflow keeps the steps it started with.
 
 **Access:** Settings are **read-only** by default, so anyone can browse them. To edit, click **Unlock editing** and enter the admin key (the `SETTINGS_ADMIN_KEY` Worker secret). The key is sent once over the Settings WebSocket, compared in constant time, and unlocks only that connection; every write is re-checked on the server, so other viewers stay read-only. With no key configured, editing is disabled entirely. For stricter access (for example, restricting who can open the app at all), put it behind [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/).
+
+## Security
+
+The app is public and has no user accounts, so everything that changes shared data or costs money is bounded on the server:
+
+- **Settings and project data can't be written directly.** Every agent rejects client-sent state (`validateStateChange`); changes go only through validated server methods. The SDK's sub-agent route is disabled.
+- **Admin-only actions** (editing Settings, **Reload data**) need the `SETTINGS_ADMIN_KEY` secret: compared in constant time, unlocking only the current connection, and throttled per connection and globally.
+- **Chat ownership:** the browser that creates a chat gets a random owner token (only its hash is stored), and only that browser can rename or delete the chat. Chats are otherwise shared with everyone viewing the project.
+- **Cost and abuse limits:** a per-project rate limit on chat turns and workflow starts (Workers rate-limit binding), an 8,000-character message cap, and caps on chats (50), RAID items (500) and every text field.
+- **Rendering:** LLM output is shown without raw HTML or images and with only `https`/`mailto` links; strict security headers and a `script-src 'self'` Content-Security-Policy (`public/_headers`).
+- **Secrets** stay out of git (`.env`, `.dev.vars`); CI runs with a read-only token.
+
+For a real team deployment, add sign-in (for example [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/)) so chats can be private per user.
 
 ## Run locally
 
@@ -147,7 +161,8 @@ The second command sets the admin key that unlocks Settings editing. Use a long 
 - `src/workflows/playbook-workflow.ts`: Cloudflare Workflow that runs plugin workflows step by step
 - `src/llm.ts`: model setup and system prompt shared by chats and workflows
 - `src/plugins/`: plugin author API (`define.ts`), bundled loader (`registry.ts`), schemas and effective-catalog resolver (`catalog.ts`), toolset and prompt assembly (`runtime.ts`)
-- `src/agents/settings-agent.ts`: stores and validates Settings overrides
+- `src/agents/settings-agent.ts`: stores and validates Settings overrides and custom items
+- `src/agents/guards.ts`: shared security checks (client state writes, admin key, rate limits)
 - `plugins/core/`: built-in supply chain tools, skills and prompts
 - `src/data.ts`: loads and validates `data/`
 - `src/shared.ts`: Zod schemas (data validation and tool inputs), types, schedule-risk analysis

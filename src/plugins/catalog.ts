@@ -46,6 +46,19 @@ export const WorkflowSchema = z.object({
 
 const body = z.string().trim().min(1).max(MAX_BODY);
 
+/** Name rule for skills, commands (prompts) and workflows, in files and Settings. */
+export const KEBAB_NAME = /^[a-z0-9][a-z0-9-]*$/;
+const customName = z
+  .string()
+  .regex(KEBAB_NAME, "Use lowercase letters, numbers and dashes");
+
+/** Items created in Settings (full definitions, not overrides). */
+const CustomItemsSchema = z.object({
+  skills: z.record(customName, SkillMetaSchema.extend({ body })).default({}),
+  prompts: z.record(customName, PromptMetaSchema.extend({ body })).default({}),
+  workflows: z.record(customName, WorkflowSchema).default({})
+});
+
 /** User edits layered over bundled plugins. Absent fields keep the bundled value. */
 export const OverridesSchema = z.object({
   /** Disabled items as "<kind>:<name>" keys (see itemKey). */
@@ -62,7 +75,9 @@ export const OverridesSchema = z.object({
       PromptMetaSchema.partial().extend({ body: body.optional() })
     )
     .default({}),
-  workflows: z.record(z.string(), WorkflowSchema.partial()).default({})
+  workflows: z.record(z.string(), WorkflowSchema.partial()).default({}),
+  /** Skills, commands and workflows created in Settings (the "Custom" plugin). */
+  custom: CustomItemsSchema.default({ skills: {}, prompts: {}, workflows: {} })
 });
 
 export type Overrides = z.infer<typeof OverridesSchema>;
@@ -70,8 +85,26 @@ export const EMPTY_OVERRIDES: Overrides = {
   disabled: [],
   skills: {},
   prompts: {},
-  workflows: {}
+  workflows: {},
+  custom: { skills: {}, prompts: {}, workflows: {} }
 };
+
+/**
+ * Stored Settings state in the current shape: fills defaults for fields added
+ * after it was saved (e.g. `custom`). Unreadable state falls back to defaults.
+ */
+export function normalizeOverrides(value: unknown): Overrides {
+  const result = OverridesSchema.safeParse(value ?? {});
+  return result.success ? result.data : EMPTY_OVERRIDES;
+}
+
+/** Synthetic plugin that holds the items created in Settings. */
+export const CUSTOM_PLUGIN = {
+  id: "custom",
+  name: "Custom",
+  description: "Skills, commands and workflows created in Settings.",
+  version: "1.0.0"
+} as const;
 
 /** Name of the single SettingsAgent instance that stores Overrides. */
 export const SETTINGS_NAME = "global";
@@ -135,6 +168,10 @@ export type Effective<T> = T & {
   enabled: boolean;
   /** Differs from the bundled plugin file. */
   modified: boolean;
+  /** Created in Settings (lives in the Custom plugin; can be deleted). */
+  custom: boolean;
+  /** For custom items: a bundled plugin now defines the same name and takes precedence. */
+  shadowedBy?: string;
 };
 
 export type EffectiveWorkflow = Effective<WorkflowInfo> & {
@@ -215,13 +252,14 @@ const differs = (base: object, override: object | undefined) =>
 /** Apply overrides to bundled plugins. Pure; the same result on server and client. */
 export function resolveCatalog(
   bundled: PluginInfo[],
-  overrides: Overrides
+  stored: unknown
 ): Catalog {
+  const overrides = normalizeOverrides(stored);
   const disabled = new Set(overrides.disabled);
   const on = (pluginOn: boolean, kind: ItemKind, name: string) =>
     pluginOn && !disabled.has(itemKey(kind, name));
 
-  const plugins: Catalog = bundled.map((p) => {
+  const bundledPlugins: Catalog = bundled.map((p) => {
     const enabled = !disabled.has(itemKey("plugin", p.id));
     return {
       ...p,
@@ -232,7 +270,8 @@ export function resolveCatalog(
           ...s,
           ...o,
           enabled: on(enabled, "skill", s.name),
-          modified: differs(s, o)
+          modified: differs(s, o),
+          custom: false
         };
       }),
       prompts: p.prompts.map((s) => {
@@ -241,13 +280,15 @@ export function resolveCatalog(
           ...s,
           ...o,
           enabled: on(enabled, "prompt", s.name),
-          modified: differs(s, o)
+          modified: differs(s, o),
+          custom: false
         };
       }),
       tools: p.tools.map((t) => ({
         ...t,
         enabled: on(enabled, "tool", t.name),
-        modified: false
+        modified: false,
+        custom: false
       })),
       workflows: p.workflows.map((w) => {
         const o = overrides.workflows[w.name];
@@ -256,20 +297,84 @@ export function resolveCatalog(
           ...o,
           enabled: on(enabled, "workflow", w.name),
           modified: differs(w, o),
+          custom: false,
           problems: []
         };
       })
     };
   });
 
+  // Bundled items win name clashes (e.g. a later deploy adds the same name);
+  // skills and commands (prompts + workflows) are separate namespaces.
+  const owners = (names: [string, string][]) => new Map(names);
+  const skillOwner = owners(
+    bundled.flatMap((p) =>
+      p.skills.map((s) => [s.name, p.id] as [string, string])
+    )
+  );
+  const commandOwner = owners(
+    bundled.flatMap((p) =>
+      [...p.prompts, ...p.workflows].map(
+        (i) => [i.name, p.id] as [string, string]
+      )
+    )
+  );
+  const customOn = !disabled.has(itemKey("plugin", CUSTOM_PLUGIN.id));
+  const customItem = <T extends object>(
+    kind: ItemKind,
+    name: string,
+    fields: T,
+    owner: Map<string, string>
+  ) => {
+    const shadowedBy = owner.get(name);
+    return {
+      ...fields,
+      name,
+      plugin: CUSTOM_PLUGIN.id,
+      enabled: on(customOn, kind, name) && !shadowedBy,
+      modified: false,
+      custom: true,
+      ...(shadowedBy ? { shadowedBy } : {})
+    };
+  };
+  const { custom } = overrides;
+  const customPlugin: EffectivePlugin = {
+    ...CUSTOM_PLUGIN,
+    enabled: customOn,
+    skills: Object.entries(custom.skills).map(([name, s]) =>
+      customItem("skill", name, s, skillOwner)
+    ),
+    prompts: Object.entries(custom.prompts).map(([name, p]) =>
+      customItem("prompt", name, p, commandOwner)
+    ),
+    tools: [],
+    workflows: Object.entries(custom.workflows).map(([name, w]) => ({
+      ...customItem("workflow", name, w, commandOwner),
+      problems: []
+    }))
+  };
+  const plugins: Catalog = [...bundledPlugins, customPlugin];
+
+  // Name → enabled; a shadowed custom skill never replaces the bundled one.
   const skills = new Map(
-    plugins.flatMap((p) => p.skills.map((s) => [s.name, s.enabled] as const))
+    plugins
+      .flatMap((p) => p.skills)
+      .filter((s) => !s.shadowedBy)
+      .map((s) => [s.name, s.enabled] as const)
   );
   const tools = new Map(
     plugins.flatMap((p) => p.tools.map((t) => [t.name, t] as const))
   );
+
   for (const w of plugins.flatMap((p) => p.workflows)) {
-    w.problems = workflowProblems(w.steps, skills, tools);
+    w.problems = [
+      ...(w.shadowedBy
+        ? [
+            `Plugin "${w.shadowedBy}" now defines /${w.name}; rename this workflow`
+          ]
+        : []),
+      ...workflowProblems(w.steps, skills, tools)
+    ];
   }
   return plugins;
 }

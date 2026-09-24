@@ -142,7 +142,7 @@ export class ChatAgent extends AIChatAgent<Env> {
     };
     await this.runWorkflow(WORKFLOW_BINDING, params);
     return replyWith(
-      `▶️ Running workflow **/${name}** (${steps.length} steps). Results will appear here as each step completes.\n\n${steps.map((s, i) => `${i + 1}. ${s.name}`).join("\n")}`
+      `▶️ Running workflow **/${name}** (${steps.length} step${steps.length === 1 ? "" : "s"}). Results will appear here as each step completes.\n\n${steps.map((s, i) => `${i + 1}. ${s.name}`).join("\n")}`
     );
   }
 
