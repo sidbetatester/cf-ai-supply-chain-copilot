@@ -28,18 +28,20 @@ Worker ── /api/projects · routeAgentRequest (rejects unknown projects/chats
    │    ├─ State: project data loaded from data/, chat registry, activity log
    │    ├─ Domain operations: POs, milestones, RAID items (validated by Zod)
    │    └─ Reminders: this.schedule() → DO alarms → broadcast to viewers
-   └─ ChatAgent (Durable Object, one per chat, named "<project>--<chat>")
-        ├─ Memory: chat history in DO SQLite
-        ├─ LLM: Workers AI · @cf/meta/llama-3.3-70b-instruct-fp8-fast
-        └─ Tools → ProjectAgent over Durable Object RPC
+   ├─ ChatAgent (Durable Object, one per chat, named "<project>--<chat>")
+   │    ├─ Memory: chat history in DO SQLite
+   │    ├─ LLM: Workers AI · @cf/meta/llama-3.3-70b-instruct-fp8-fast
+   │    ├─ Tools → ProjectAgent over Durable Object RPC
+   │    └─ /workflow commands → PlaybookWorkflow
+   └─ PlaybookWorkflow (Cloudflare Workflow): durable steps → events back to ChatAgent
 ```
 
-| Requirement             | Implementation                                                                                                                                            |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| LLM                     | Llama 3.3 70B on Workers AI, called through the AI SDK (`workers-ai-provider`) with tool calling                                                          |
-| Workflow / coordination | Agents SDK on **Durable Objects**: a multi-step tool-calling loop, human-in-the-loop approvals, agent-to-agent RPC, and scheduled tasks through DO alarms |
-| User input              | Chat UI plus voice input (Web Speech API), served as static assets by the same Worker                                                                     |
-| Memory / state          | Per-project Durable Object holds structured state synced live to every viewer; per-chat Durable Objects hold message history; both persist in SQLite      |
+| Requirement             | Implementation                                                                                                                                                                                                                                                                                       |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| LLM                     | Llama 3.3 70B on Workers AI, called through the AI SDK (`workers-ai-provider`) with tool calling                                                                                                                                                                                                     |
+| Workflow / coordination | **Cloudflare Workflows** run multi-step plugin workflows durably (per-step retries, results streamed back to the chat); Agents SDK on **Durable Objects** coordinates chats and projects: a tool-calling loop, human-in-the-loop approvals, agent-to-agent RPC and scheduled reminders via DO alarms |
+| User input              | Chat UI plus voice input (Web Speech API), served as static assets by the same Worker                                                                                                                                                                                                                |
+| Memory / state          | Per-project Durable Object holds structured state synced live to every viewer; per-chat Durable Objects hold message history; both persist in SQLite                                                                                                                                                 |
 
 **Design choice:** schedule-risk math (`analyzeScheduleRisk` in `src/shared.ts`) is deterministic code, not LLM output. The LLM decides _when_ to use it and _explains_ the result, so the numbers it reports are never hallucinated. The dashboard uses the same function.
 
@@ -65,11 +67,26 @@ plugins/<plugin>/
   plugin.json          { "name", "description", "version" }
   skills/<name>.md     instructions for the agent
   prompts/<name>.md    reusable prompts (become /commands)
+  workflows/<name>.yaml  multi-step /commands run as Cloudflare Workflows
   tools/<name>.ts      export default defineTool({ description, inputSchema, execute })
 ```
 
 - **Skills** have YAML frontmatter `description` and optional `always: true`. Always-on skills are part of every system prompt. Other skills are listed by name and description, and the agent loads one with the built-in `useSkill` tool when a task calls for it, so it always knows what exists without spending context on everything.
 - **Prompts** are slash commands: `prompts/notes.md` becomes `/notes`. Frontmatter has `description` and optional `argumentHint`; `$ARGUMENTS` in the body is replaced with what the user types after the command. Typing `/` in the chat opens an autocomplete menu (↑/↓, Tab or Enter; commands without arguments run on Enter). Chats show the command as typed; the server expands it before it reaches the LLM.
+- **Workflows** are multi-step slash commands (`workflows/weekly-review.yaml` → `/weekly-review`) that run as durable [Cloudflare Workflows](https://developers.cloudflare.com/workflows/). Each step names a `prompt` (with `$ARGUMENTS`), an optional `skill`, and the `tools` it may use; steps run in order with earlier outputs as context, each retried on failure, and post their results into the chat as they finish. Steps run unattended, so they can't use tools that need approval (enforced at load).
+
+  ```yaml
+  description: Weekly program review
+  argumentHint: "[focus for this week]"
+  steps:
+    - name: Assess schedule risk
+      skill: risk-mitigation
+      prompt: Assess schedule risk... Context from the user: $ARGUMENTS
+    - name: Log follow-up actions
+      tools: [addRaidItems]
+      prompt: Add an Action item for each recommended mitigation...
+  ```
+
 - **Tools** are TypeScript files named after the tool (`tools/upsertPurchaseOrder.ts`). `execute(input, ctx)` receives Zod-validated input and a context with the project's `ProjectAgent` RPC stub. `needsApproval(input)` makes the user approve the call first.
 
 Plugins are bundled and validated at build time: bad frontmatter, a missing `plugin.json`, or a name used by two plugins fails startup naming the file. `GET /api/plugins` returns the catalog.
@@ -85,6 +102,8 @@ npm run dev
 ```
 
 Open the URL Vite prints (usually http://localhost:5173).
+
+If you authenticate with `CLOUDFLARE_API_TOKEN` in a `.env` file instead of `wrangler login`, also create an empty `.dev.vars`. Otherwise the Cloudflare Vite plugin loads `.env` as Worker secrets, exposing the token to the Worker and copying it into `dist/`.
 
 ## Deploy
 
@@ -105,7 +124,9 @@ npm run deploy
 
 - `src/server.ts`: Worker entry, `/api/projects`, agent routing and access guard
 - `src/agents/project-agent.ts`: per-project state, domain operations, reminders, chat registry
-- `src/agents/chat-agent.ts`: per-chat LLM loop and project context
+- `src/agents/chat-agent.ts`: per-chat LLM loop; starts workflows and posts their results
+- `src/workflows/playbook-workflow.ts`: Cloudflare Workflow that runs plugin workflows step by step
+- `src/llm.ts`: model setup and system prompt shared by chats and workflows
 - `src/plugins/`: plugin author API (`define.ts`), loader (`registry.ts`), toolset and prompt assembly (`runtime.ts`)
 - `plugins/core/`: built-in supply chain tools, skills and prompts
 - `src/data.ts`: loads and validates `data/`

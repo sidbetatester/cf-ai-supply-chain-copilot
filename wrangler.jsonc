@@ -16,6 +16,13 @@
       { "class_name": "ChatAgent", "name": "ChatAgent" }
     ]
   },
+  "workflows": [
+    {
+      "name": "cf-ai-supply-chain-copilot-playbook",
+      "binding": "PLAYBOOK_WORKFLOW",
+      "class_name": "PlaybookWorkflow"
+    }
+  ],
   "migrations": [
     {
       "new_sqlite_classes": ["ProjectAgent", "ChatAgent"],

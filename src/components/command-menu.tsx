@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import type { PromptInfo } from "../plugins/registry";
+import { useCallback, useMemo, useState } from "react";
+import { Badge } from "@cloudflare/kumo";
+import type { CommandInfo } from "../plugins/registry";
 import { parseSlashCommand } from "../shared";
 
 /** While the input is just "/partial-name", the commands that match it. */
-const matchCommands = (input: string, commands: PromptInfo[]) => {
+const matchCommands = (input: string, commands: CommandInfo[]) => {
   const partial = /^\/([a-z0-9-]*)$/.exec(input)?.[1];
   return partial === undefined
     ? []
@@ -11,12 +12,12 @@ const matchCommands = (input: string, commands: PromptInfo[]) => {
 };
 
 /** The known command at the start of the input, if any (for the hint line). */
-export const activeCommand = (input: string, commands: PromptInfo[]) => {
+export const activeCommand = (input: string, commands: CommandInfo[]) => {
   const parsed = parseSlashCommand(input);
   return parsed ? commands.find((c) => c.name === parsed.name) : undefined;
 };
 
-export const commandText = (command: PromptInfo) => `/${command.name} `;
+export const commandText = (command: CommandInfo) => `/${command.name} `;
 
 /**
  * Slash-command autocomplete state for a text input. `onKeyDown` returns true
@@ -24,17 +25,22 @@ export const commandText = (command: PromptInfo) => `/${command.name} `;
  */
 export function useCommandMenu(
   input: string,
-  commands: PromptInfo[],
-  onComplete: (command: PromptInfo, submit: boolean) => void
+  commands: CommandInfo[],
+  onComplete: (command: CommandInfo, submit: boolean) => void
 ) {
   const matches = useMemo(
     () => matchCommands(input, commands),
     [input, commands]
   );
-  const [highlight, setHighlight] = useState(0);
+  // The highlight belongs to the input it was set for, so it resets to the
+  // first match whenever the input changes (derived during render).
+  const [selection, setSelection] = useState({ input, index: 0 });
+  const highlight = selection.input === input ? selection.index : 0;
+  const setHighlight = useCallback(
+    (index: number) => setSelection({ input, index }),
+    [input]
+  );
   const [dismissedFor, setDismissedFor] = useState<string>();
-
-  useEffect(() => setHighlight(0), [input]);
 
   const open = matches.length > 0 && dismissedFor !== input;
 
@@ -44,10 +50,10 @@ export function useCommandMenu(
       const selected = matches[highlight];
       switch (e.key) {
         case "ArrowDown":
-          setHighlight((h) => (h + 1) % matches.length);
+          setHighlight((highlight + 1) % matches.length);
           break;
         case "ArrowUp":
-          setHighlight((h) => (h - 1 + matches.length) % matches.length);
+          setHighlight((highlight - 1 + matches.length) % matches.length);
           break;
         case "Tab":
           onComplete(selected, false);
@@ -66,7 +72,7 @@ export function useCommandMenu(
       e.preventDefault();
       return true;
     },
-    [open, matches, highlight, input, onComplete]
+    [open, matches, highlight, setHighlight, input, onComplete]
   );
 
   return { open, matches, highlight, setHighlight, onKeyDown };
@@ -77,7 +83,7 @@ export function CommandMenu({
   onSelect
 }: {
   menu: ReturnType<typeof useCommandMenu>;
-  onSelect: (command: PromptInfo) => void;
+  onSelect: (command: CommandInfo) => void;
 }) {
   if (!menu.open) return null;
   return (
@@ -98,6 +104,9 @@ export function CommandMenu({
             className={`w-full flex items-baseline gap-2 px-3 py-2 rounded-lg text-left text-sm ${i === menu.highlight ? "bg-kumo-control" : ""}`}
           >
             <span className="font-mono text-kumo-default">/{c.name}</span>
+            {c.kind === "workflow" && (
+              <Badge variant="secondary">workflow</Badge>
+            )}
             {c.argumentHint && (
               <span className="font-mono text-xs text-kumo-subtle">
                 {c.argumentHint}

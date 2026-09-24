@@ -14,7 +14,7 @@ import {
   TruckIcon
 } from "@phosphor-icons/react";
 import type { ChatAgent } from "../agents/chat-agent";
-import type { PromptInfo } from "../plugins/registry";
+import type { CommandInfo } from "../plugins/registry";
 import { chatAgentName, parseSlashCommand } from "../shared";
 import {
   activeCommand,
@@ -85,7 +85,7 @@ export function Chat({
 }: {
   projectId: string;
   chatId: string;
-  commands: PromptInfo[];
+  commands: CommandInfo[];
   showDebug: boolean;
   onConnectionChange: (connected: boolean) => void;
 }) {
@@ -140,7 +140,7 @@ export function Chat({
 
   /** Put a command in the input, or run it right away if it takes no arguments. */
   const pickCommand = useCallback(
-    (command: PromptInfo, submit: boolean) => {
+    (command: CommandInfo, submit: boolean) => {
       if (submit) {
         setInput("");
         sendText(`/${command.name}`);

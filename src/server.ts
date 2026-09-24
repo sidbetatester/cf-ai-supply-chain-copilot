@@ -1,15 +1,17 @@
 import { getAgentByName, routeAgentRequest } from "agents";
 import { listProjects, projectExists } from "./data";
-import { listPlugins } from "./plugins/registry";
+import { listCommands, listPlugins } from "./plugins/registry";
 import { parseChatAgentName } from "./shared";
 
 export { ChatAgent } from "./agents/chat-agent";
 export { ProjectAgent } from "./agents/project-agent";
+export { PlaybookWorkflow } from "./workflows/playbook-workflow";
 
 /** Read-only catalog endpoints (built from bundled data/ and plugins/). */
 const API: Record<string, () => unknown> = {
   "/api/projects": listProjects,
-  "/api/plugins": listPlugins
+  "/api/plugins": listPlugins,
+  "/api/commands": listCommands
 };
 
 const notFound = (what: string) =>

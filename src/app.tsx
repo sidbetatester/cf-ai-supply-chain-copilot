@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useAgent } from "agents/react";
 import { Badge, Button, Switch, Text } from "@cloudflare/kumo";
 import { Toasty, useKumoToastManager } from "@cloudflare/kumo/components/toast";
@@ -13,7 +13,7 @@ import {
   TruckIcon
 } from "@phosphor-icons/react";
 import type { ProjectAgent } from "./agents/project-agent";
-import type { PluginInfo, PromptInfo } from "./plugins/registry";
+import type { CommandInfo } from "./plugins/registry";
 import type { ProjectState, ProjectSummary } from "./shared";
 import { Chat } from "./components/chat";
 import { Dashboard } from "./components/dashboard";
@@ -132,7 +132,7 @@ function Workspace({
   navigate
 }: {
   projects: ProjectSummary[];
-  commands: PromptInfo[];
+  commands: CommandInfo[];
   projectId: string;
   chatId: string | undefined;
   navigate: ReturnType<typeof useHashRoute>[1];
@@ -318,14 +318,11 @@ function Workspace({
 
 function Shell() {
   const projectsApi = useApi<ProjectSummary[]>("/api/projects");
-  const pluginsApi = useApi<PluginInfo[]>("/api/plugins");
+  const commandsApi = useApi<CommandInfo[]>("/api/commands");
   const [route, navigate] = useHashRoute();
   const projects = projectsApi.data;
-  const error = projectsApi.error ?? pluginsApi.error;
-  const commands = useMemo(
-    () => pluginsApi.data?.flatMap((p) => p.prompts) ?? [],
-    [pluginsApi.data]
-  );
+  const error = projectsApi.error ?? commandsApi.error;
+  const commands = commandsApi.data;
 
   const projectId =
     projects?.find((p) => p.id === route.projectId)?.id ?? projects?.[0]?.id;
@@ -336,7 +333,7 @@ function Shell() {
   }, [projectId, route.projectId, navigate]);
 
   if (error) return <Centered>Couldn't load the app ({error}).</Centered>;
-  if (!projects || !pluginsApi.data) return <Centered>Loading…</Centered>;
+  if (!projects || !commands) return <Centered>Loading…</Centered>;
   if (!projectId)
     return (
       <Centered>
