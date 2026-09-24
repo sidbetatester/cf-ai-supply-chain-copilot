@@ -2,43 +2,59 @@
 
 **An AI program-management copilot for hardware supply chain deployments, built on Cloudflare.**
 
-A supply chain program manager rolling out hardware to a new PoP (point of presence) juggles POs, supplier ETAs, customs lead time, milestones and a RAID log (Risks, Actions, Issues, Decisions). This app puts all of that behind a chat interface. You can:
+A supply chain program manager rolling out hardware to a new PoP (point of presence) juggles POs, supplier ETAs, customs lead time, milestones and a RAID log (Risks, Actions, Issues, Decisions). This app puts all of that behind a chat interface, across multiple projects and chats. You can:
 
 - **Ask about risk:** "What's our biggest schedule risk?" The agent checks every gating PO's landed date (ETA + customs buffer) against the milestone it gates, then explains the gap and proposes mitigations.
-- **Paste meeting notes:** it extracts risks, actions, issues and decisions into the RAID log and updates POs and milestones.
+- **Paste meeting notes:** it extracts risks, actions, issues and decisions into the RAID log and updates the existing POs and milestones.
 - **Re-baseline with approval:** moving a milestone date is a schedule slip, so the agent asks the PM to approve it first (human in the loop).
-- **Draft status reports:** RAG-rated leadership updates built from live program data.
+- **Draft status reports:** RAG-rated leadership updates built from live project data.
 - **Schedule follow-ups:** "Remind me Friday to chase Contoso". Durable Object alarms fire the reminder later.
 - **Talk to it:** a mic button does voice input through the browser's Web Speech API.
 
-A **live dashboard** next to the chat (milestones, POs with slack in days, RAID log, agent activity) updates in real time as the agent calls tools.
+A **collapsible sidebar** lists projects and their chats. A **live dashboard** next to the chat (milestones, POs with slack in days, RAID log, agent activity) updates in real time for everyone viewing the project.
 
-> Demo data: a fictional "LOS-02 PoP Expansion" in Lagos. All suppliers are fictional. The seed data has a problem built in on purpose: the core switches land 5 days after the "All hardware on site" milestone.
+> Demo data: two fictional projects, "LOS-02 PoP Expansion" (Lagos) and "FRA-07 Capacity Refresh" (Frankfurt). All suppliers are fictional. LOS-02 has a problem built in on purpose: the core switches land 5 days after the "All hardware on site" milestone.
 
 ## Architecture
 
 ```
 Browser (React + Kumo UI)
-  ├─ Chat (useAgentChat) ─────────┐  WebSocket
-  └─ Dashboard (useAgent state) ◄─┤  state sync
-                                  ▼
-Worker ── routeAgentRequest ──► SupplyChainAgent (Durable Object, one per program)
-                                 ├─ Memory: chat history + ProgramState in DO SQLite
-                                 ├─ Tools: getProgramSnapshot, upsertPurchaseOrder,
-                                 │         updateMilestone (needs approval), addRaidItems,
-                                 │         closeRaidItem, schedule/list/cancel reminders
-                                 ├─ Scheduling: this.schedule() → DO alarms → executeTask
-                                 └─ LLM: Workers AI · @cf/meta/llama-3.3-70b-instruct-fp8-fast
+  ├─ Sidebar: projects → chats          ┐
+  ├─ Dashboard (useAgent state sync) ◄──┤ WebSocket per project
+  └─ Chat (useAgentChat)             ◄──┘ WebSocket per chat
+                    │
+Worker ── /api/projects · routeAgentRequest (rejects unknown projects/chats)
+   ├─ ProjectAgent (Durable Object, one per project)
+   │    ├─ State: project data loaded from data/, chat registry, activity log
+   │    ├─ Domain operations: POs, milestones, RAID items (validated by Zod)
+   │    └─ Reminders: this.schedule() → DO alarms → broadcast to viewers
+   └─ ChatAgent (Durable Object, one per chat, named "<project>--<chat>")
+        ├─ Memory: chat history in DO SQLite
+        ├─ LLM: Workers AI · @cf/meta/llama-3.3-70b-instruct-fp8-fast
+        └─ Tools → ProjectAgent over Durable Object RPC
 ```
 
-| Requirement | Implementation |
-|---|---|
-| LLM | Llama 3.3 70B on Workers AI, called through the AI SDK (`workers-ai-provider`) with tool calling |
-| Workflow / coordination | Agents SDK `AIChatAgent` on **Durable Objects**: a multi-step tool-calling loop, human-in-the-loop approvals, and scheduled tasks through DO alarms |
-| User input | Chat UI with streaming responses, plus voice input (Web Speech API), served as static assets by the same Worker |
-| Memory / state | Per-program Durable Object: chat history and structured program state (POs, milestones, RAID) persisted in SQLite and synced live to every connected client |
+| Requirement             | Implementation                                                                                                                                            |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| LLM                     | Llama 3.3 70B on Workers AI, called through the AI SDK (`workers-ai-provider`) with tool calling                                                          |
+| Workflow / coordination | Agents SDK on **Durable Objects**: a multi-step tool-calling loop, human-in-the-loop approvals, agent-to-agent RPC, and scheduled tasks through DO alarms |
+| User input              | Chat UI plus voice input (Web Speech API), served as static assets by the same Worker                                                                     |
+| Memory / state          | Per-project Durable Object holds structured state synced live to every viewer; per-chat Durable Objects hold message history; both persist in SQLite      |
 
-**Design choice:** schedule-risk math (`analyzeScheduleRisk` in `src/shared.ts`) is deterministic code, not LLM output. The LLM decides *when* to call it and *explains* the result, so the numbers it reports are never hallucinated. The dashboard uses the same function.
+**Design choice:** schedule-risk math (`analyzeScheduleRisk` in `src/shared.ts`) is deterministic code, not LLM output. The LLM decides _when_ to use it and _explains_ the result, so the numbers it reports are never hallucinated. The dashboard uses the same function.
+
+## Project data
+
+Project data lives in files, not code. Each project has one file per category:
+
+```
+data/projects/<project>.json     name, site, goLive, customsBufferDays
+data/orders/<project>.csv        id,supplier,item,qty,eta,status,milestoneId
+data/milestones/<project>.csv    id,name,due,status
+data/raid/<project>.csv          id,type,text,owner,due,severity,status
+```
+
+Files are bundled at build time, and every row is validated against the Zod schemas in `src/shared.ts`. A malformed row fails startup with its file and row number. To add a project, add its files. **Reload data** in the UI resets a project to its source files.
 
 ## Run locally
 
@@ -60,19 +76,21 @@ npm run deploy
 
 ## Try it
 
-1. Click **"What's our biggest schedule risk right now?"**
-2. Click the **supplier-sync meeting notes** prompt. Watch the RAID log and the PO slip update on the dashboard.
-3. Ask: *"Move M2 to 2026-11-27 to absorb the switch delay"*. Approve or reject the re-baseline.
+1. In **LOS-02**, click **"What's our biggest schedule risk right now?"**
+2. Paste meeting notes, e.g. _"Contoso says the core switches slip a week, new ETA 2026-11-25. Decision: pre-stage optics in the racks. Ade to get an air-freight quote by Friday."_ Watch the RAID log and PO slack update on the dashboard.
+3. Ask: _"Move M2 to 2026-11-27 to absorb the switch delay"_. Approve or reject the re-baseline.
 4. Click **"Draft a weekly status report for leadership"**.
 5. Click the **reminder** prompt and wait about a minute for the toast.
-6. Reload the page. The chat and program state persist (Durable Object memory). **Reset demo** restores the seed data.
+6. Open a **new chat** or switch to **FRA-07** from the sidebar. Reload the page: chats and project state persist. **Reload data** restores a project's source files.
 
 ## Project layout
 
-- `src/server.ts`: the `SupplyChainAgent` Durable Object (system prompt, tools, scheduling)
-- `src/shared.ts`: domain model, seed data, deterministic schedule-risk analysis
-- `src/app.tsx`: chat UI, voice input, approvals
-- `src/dashboard.tsx`: live program dashboard
+- `src/server.ts`: Worker entry, `/api/projects`, agent routing and access guard
+- `src/agents/project-agent.ts`: per-project state, domain operations, reminders, chat registry
+- `src/agents/chat-agent.ts`: per-chat LLM loop, system prompt and tools
+- `src/data.ts`: loads and validates `data/`
+- `src/shared.ts`: Zod schemas (data validation and tool inputs), types, schedule-risk analysis
+- `src/components/`: sidebar, chat, dashboard, tool-call rendering
 
 Built from the [cloudflare/agents-starter](https://github.com/cloudflare/agents-starter) template. See [PROMPTS.md](./PROMPTS.md) for the AI prompts used during development.
 
