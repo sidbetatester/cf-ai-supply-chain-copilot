@@ -1,19 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAgent } from "agents/react";
-import { Badge, Button, Switch, Text, TooltipProvider } from "@cloudflare/kumo";
+import { Badge, Button, Switch, TooltipProvider } from "@cloudflare/kumo";
 import { Toasty, useKumoToastManager } from "@cloudflare/kumo/components/toast";
 import {
   ArrowCounterClockwiseIcon,
   BugIcon,
   ChartBarIcon,
-  CircleIcon,
   GearSixIcon,
   ListIcon,
   MoonIcon,
   SunIcon,
   TruckIcon
 } from "@phosphor-icons/react";
-import type { ProjectAgent } from "./agents/project-agent";
+import type { SettingsAgent } from "./agents/settings-agent";
+import { useChats, useLocalProject, type ProjectOrigin } from "./browser/hooks";
+import * as storage from "./browser/storage";
 import {
   EMPTY_OVERRIDES,
   listCommands,
@@ -24,18 +25,14 @@ import {
   type Overrides,
   type PluginInfo
 } from "./plugins/catalog";
-import type { SettingsAgent } from "./agents/settings-agent";
-import {
-  sha256Hex,
-  type ChatMeta,
-  type ProjectState,
-  type ProjectSummary
-} from "./shared";
+import type { ProjectState, ProjectSummary } from "./shared";
 import { Chat } from "./components/chat";
 import { Dashboard } from "./components/dashboard";
-import { Sidebar } from "./components/sidebar";
-import { Tip } from "./components/tip";
+import { DemoBanner } from "./components/demo-banner";
+import { ImportProjectDialog } from "./components/import-project";
 import { SettingsPanel, type SettingsConnection } from "./components/settings";
+import { Sidebar, type SidebarProject } from "./components/sidebar";
+import { Tip } from "./components/tip";
 
 // ── Routing: #/<projectId>/<chatId> ───────────────────────────────────
 
@@ -89,36 +86,38 @@ function useApi<T>(path: string) {
   return state;
 }
 
-// ── Chat ownership: a random per-browser token (only its hash is shared) ──
+// ── Projects imported into this browser ───────────────────────────────
 
-const OWNER_TOKEN_KEY = "chatOwnerToken";
-
-function useOwnerToken() {
-  const [token] = useState(() => {
-    try {
-      const stored = localStorage.getItem(OWNER_TOKEN_KEY);
-      if (stored) return stored;
-    } catch {
-      // Storage blocked: the token lasts for this page load only.
-    }
-    const created = `${crypto.randomUUID()}${crypto.randomUUID()}`.replaceAll(
-      "-",
-      ""
-    );
-    try {
-      localStorage.setItem(OWNER_TOKEN_KEY, created);
-    } catch {
-      // As above.
-    }
-    return created;
-  });
-  const [hash, setHash] = useState<string>();
-  useEffect(() => {
-    sha256Hex(token).then(setHash);
-  }, [token]);
-  return { token, hash };
+async function loadImportedProjects(): Promise<SidebarProject[]> {
+  const list: SidebarProject[] = [];
+  for (const id of await storage.listImportedProjects()) {
+    const stored = await storage.loadProject(id);
+    if (stored)
+      list.push({
+        id,
+        name: stored.state.project.name,
+        site: stored.state.project.site,
+        origin: "imported"
+      });
+  }
+  return list.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function useImportedProjects() {
+  const [projects, setProjects] = useState<SidebarProject[]>();
+  useEffect(() => {
+    let cancelled = false;
+    loadImportedProjects().then((list) => !cancelled && setProjects(list));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const refresh = useCallback(
+    async () => setProjects(await loadImportedProjects()),
+    []
+  );
+  return { projects, refresh };
+}
 // ── Per-viewer preferences (best effort; storage may be unavailable) ──
 
 function usePersistentFlag(key: string, initial: boolean) {
@@ -175,33 +174,35 @@ function ThemeToggle() {
   );
 }
 
-// ── Workspace: one connected project ──────────────────────────────────
+// ── Workspace: one project and its chats ──────────────────────────────
+
+const REMINDER_CHECK_MS = 15_000;
 
 function Workspace({
   projects,
+  project: current,
   catalog,
   commands,
   settings,
-  adminKey,
-  onAdminKey,
-  projectId,
   chatId,
-  navigate
+  navigate,
+  onImportProject,
+  onDeleteProject
 }: {
-  projects: ProjectSummary[];
+  projects: SidebarProject[];
+  project: SidebarProject;
   catalog: Catalog;
   commands: CommandInfo[];
   settings: SettingsConnection;
-  /** Set after unlocking Settings; enables admin-only project actions. */
-  adminKey: string | undefined;
-  onAdminKey: (key: string) => void;
-  projectId: string;
   chatId: string | undefined;
   navigate: ReturnType<typeof useHashRoute>[1];
+  onImportProject: () => void;
+  onDeleteProject: (id: string) => void;
 }) {
+  const projectId = current.id;
   const toasts = useKumoToastManager();
-  const [state, setState] = useState<ProjectState>();
-  const [chatConnected, setChatConnected] = useState(false);
+  const local = useLocalProject(projectId, current.origin);
+  const { chats, create, rename, remove } = useChats(projectId);
   const [showDebug, setShowDebug] = useState(false);
   const [showDashboard, setShowDashboard] = useState(false); // small screens
   const [showSettings, setShowSettings] = useState(false);
@@ -209,29 +210,10 @@ function Workspace({
     "sidebarCollapsed",
     window.innerWidth < 768
   );
-
-  const project = useAgent<ProjectAgent, ProjectState>({
-    agent: "ProjectAgent",
-    name: projectId,
-    onStateUpdate: useCallback((s: ProjectState) => setState(s), []),
-    onMessage: useCallback(
-      (message: MessageEvent) => {
-        try {
-          const data = JSON.parse(String(message.data));
-          if (data.type === "reminder") {
-            toasts.add({
-              title: "⏰ Reminder",
-              description: data.description,
-              timeout: 0
-            });
-          }
-        } catch {
-          // Not one of our events.
-        }
-      },
-      [toasts]
-    )
-  });
+  const workflows = useMemo(
+    () => catalog.flatMap((p) => p.workflows),
+    [catalog]
+  );
 
   // On small screens the sidebar is a drawer: close it once a choice is made.
   const closeSidebarOnMobile = useCallback(() => {
@@ -239,55 +221,55 @@ function Workspace({
       setSidebarCollapsed(true);
   }, [setSidebarCollapsed]);
 
-  const owner = useOwnerToken();
-  const canManageChat = useCallback(
-    (chat: ChatMeta) => !chat.ownerHash || chat.ownerHash === owner.hash,
-    [owner.hash]
-  );
-  /** Run a project action, surfacing failures (e.g. limits, permissions) as a toast. */
-  const attempt = useCallback(
-    (title: string, action: () => Promise<unknown>) =>
-      action().catch((e: unknown) =>
-        toasts.add({
-          title,
-          description: e instanceof Error ? e.message : String(e)
-        })
-      ),
-    [toasts]
-  );
-
   const selectChat = useCallback(
     (id: string, opts?: { replace?: boolean }) =>
       navigate({ projectId, chatId: id }, opts),
     [navigate, projectId]
   );
-
   const newChat = useCallback(
-    () =>
-      attempt("Couldn't create a chat", async () => {
-        const chat = await project.stub.createChat(owner.token);
-        selectChat(chat.id);
-      }),
-    [attempt, project, owner.token, selectChat]
+    () => selectChat(create().id),
+    [create, selectChat]
   );
 
   // Keep the route pointing at a real chat: open the newest, or create one.
-  const chats = state?.chats;
   useEffect(() => {
     if (!chats || (chatId && chats.some((c) => c.id === chatId))) return;
-    if (chats.length > 0) selectChat(chats[0].id, { replace: true });
-    else
-      attempt("Couldn't create a chat", async () => {
-        const chat = await project.stub.createChat(owner.token);
-        selectChat(chat.id, { replace: true });
+    selectChat(chats[0]?.id ?? create().id, { replace: true });
+  }, [chats, chatId, create, selectChat]);
+
+  // Reminders live in the project data; show them when due (while the app is open).
+  const { state, update } = local;
+  useEffect(() => {
+    if (!state) return;
+    const check = () => {
+      const now = Date.now();
+      const due = state.reminders.filter(
+        (r) => !r.fired && Date.parse(r.dueAt) <= now
+      );
+      if (due.length === 0) return;
+      for (const r of due)
+        toasts.add({
+          title: "⏰ Reminder",
+          description: r.description,
+          timeout: 0
+        });
+      update({
+        ...state,
+        reminders: state.reminders.map((r) =>
+          due.includes(r) ? { ...r, fired: true } : r
+        )
       });
-  }, [chats, chatId, project, owner.token, attempt, selectChat]);
+    };
+    check();
+    const timer = window.setInterval(check, REMINDER_CHECK_MS);
+    return () => window.clearInterval(timer);
+  }, [state, update, toasts]);
 
   const activeChat =
     chatId && chats?.some((c) => c.id === chatId) ? chatId : undefined;
 
   return (
-    <div className="flex flex-col h-screen bg-kumo-elevated">
+    <div className="flex flex-col h-dvh bg-kumo-elevated">
       <header className="px-4 py-3 bg-kumo-base border-b border-kumo-line">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 min-w-0">
@@ -315,21 +297,6 @@ function Workspace({
             </Badge>
           </div>
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-            <output
-              className="hidden sm:flex items-center gap-1.5"
-              aria-live="polite"
-            >
-              <CircleIcon
-                size={8}
-                weight="fill"
-                className={
-                  chatConnected ? "text-kumo-success" : "text-kumo-danger"
-                }
-              />
-              <Text size="xs" variant="secondary">
-                {chatConnected ? "Connected" : "Connecting…"}
-              </Text>
-            </output>
             <Tip content="Debug: show each message's raw data" side="bottom">
               <div className="hidden md:flex items-center gap-1.5">
                 <BugIcon size={14} className="text-kumo-inactive" />
@@ -373,37 +340,32 @@ function Workspace({
                 />
               </Tip>
             </span>
-            <Tip
-              content={
-                adminKey
-                  ? "Reset this project's data to its source files in data/"
-                  : "Admin only: unlock Settings with the admin key to reload project data"
-              }
-              side="bottom"
-            >
-              <Button
-                variant="secondary"
-                icon={<ArrowCounterClockwiseIcon size={16} />}
-                disabled={!adminKey}
-                onClick={() => {
-                  if (
-                    adminKey &&
-                    confirm(
-                      "Reload this project's data from its source files? Changes made in chats will be discarded."
-                    )
-                  ) {
-                    attempt("Couldn't reload data", () =>
-                      project.stub.resetProject(adminKey)
-                    );
-                  }
-                }}
+            {current.origin === "demo" && (
+              <Tip
+                content="Discard your changes to this demo project and restore its original data"
+                side="bottom"
               >
-                <span className="hidden sm:inline">Reload data</span>
-              </Button>
-            </Tip>
+                <Button
+                  variant="secondary"
+                  icon={<ArrowCounterClockwiseIcon size={16} />}
+                  onClick={() => {
+                    if (
+                      confirm(
+                        "Restore this demo project's original data? Your changes to it in this browser will be discarded (chats are kept)."
+                      )
+                    )
+                      void local.reset();
+                  }}
+                >
+                  <span className="hidden sm:inline">Reset data</span>
+                </Button>
+              </Tip>
+            )}
           </div>
         </div>
       </header>
+
+      <DemoBanner />
 
       <div className="flex flex-1 min-h-0">
         <Sidebar
@@ -422,34 +384,39 @@ function Workspace({
             selectChat(id);
           }}
           onNewChat={newChat}
-          canManageChat={canManageChat}
-          onRenameChat={(id, title) =>
-            attempt("Couldn't rename the chat", () =>
-              project.stub.renameChat(id, title, owner.token)
-            )
-          }
-          onDeleteChat={(id) =>
-            attempt("Couldn't delete the chat", () =>
-              project.stub.deleteChat(id, owner.token)
-            )
-          }
+          onRenameChat={rename}
+          onDeleteChat={remove}
+          onImportProject={onImportProject}
+          onDeleteProject={onDeleteProject}
         />
 
         <div
           className={`flex-1 min-w-0 ${showDashboard ? "hidden xl:flex" : "flex"}`}
         >
-          {activeChat ? (
+          {local.error ? (
+            <div
+              role="alert"
+              className="flex-1 flex items-center justify-center p-6 text-sm text-red-600 dark:text-red-400"
+            >
+              {local.error}
+            </div>
+          ) : activeChat && state ? (
             <Chat
-              key={activeChat}
+              key={`${projectId}:${activeChat}`}
               projectId={projectId}
               chatId={activeChat}
+              project={state}
+              onProjectChange={update}
+              onFirstMessage={(text) =>
+                rename(activeChat, text.replace(/\s+/g, " ").slice(0, 60))
+              }
               commands={commands}
+              workflows={workflows}
               showDebug={showDebug}
-              onConnectionChange={setChatConnected}
             />
           ) : (
             <div className="flex-1 flex items-center justify-center text-kumo-inactive text-sm">
-              Loading chat…
+              Loading…
             </div>
           )}
         </div>
@@ -466,7 +433,6 @@ function Workspace({
         <SettingsPanel
           catalog={catalog}
           settings={settings}
-          onUnlocked={onAdminKey}
           onClose={() => setShowSettings(false)}
         />
       )}
@@ -477,11 +443,12 @@ function Workspace({
 // ── App ───────────────────────────────────────────────────────────────
 
 function Shell() {
-  const projectsApi = useApi<ProjectSummary[]>("/api/projects");
+  const demoApi = useApi<ProjectSummary[]>("/api/projects");
   const pluginsApi = useApi<PluginInfo[]>("/api/plugins");
+  const imported = useImportedProjects();
   const [route, navigate] = useHashRoute();
-  const projects = projectsApi.data;
-  const error = projectsApi.error ?? pluginsApi.error;
+  const [importing, setImporting] = useState(false);
+  const error = demoApi.error ?? pluginsApi.error;
 
   // Settings overrides sync live from the SettingsAgent; the effective catalog
   // is resolved here exactly as the server resolves it.
@@ -498,45 +465,75 @@ function Shell() {
     [pluginsApi.data, overrides]
   );
   const commands = useMemo(() => catalog && listCommands(catalog), [catalog]);
-  // Held in memory only after a successful Settings unlock (never stored).
-  const [adminKey, setAdminKey] = useState<string>();
 
-  const projectId =
-    projects?.find((p) => p.id === route.projectId)?.id ?? projects?.[0]?.id;
+  const projects = useMemo<SidebarProject[] | undefined>(
+    () =>
+      demoApi.data &&
+      imported.projects && [
+        ...demoApi.data.map((p) => ({ ...p, origin: "demo" as ProjectOrigin })),
+        ...imported.projects
+      ],
+    [demoApi.data, imported.projects]
+  );
+  const current =
+    projects?.find((p) => p.id === route.projectId) ?? projects?.[0];
 
   useEffect(() => {
-    if (projectId && projectId !== route.projectId)
-      navigate({ projectId }, { replace: true });
-  }, [projectId, route.projectId, navigate]);
+    if (current && current.id !== route.projectId)
+      navigate({ projectId: current.id }, { replace: true });
+  }, [current, route.projectId, navigate]);
+
+  const onImported = useCallback(
+    async (state: ProjectState) => {
+      await storage.addImportedProject(state.project.id, state);
+      await imported.refresh();
+      setImporting(false);
+      navigate({ projectId: state.project.id });
+    },
+    [imported, navigate]
+  );
+
+  const onDeleteProject = useCallback(
+    async (id: string) => {
+      await storage.deleteProject(id);
+      await imported.refresh();
+      navigate({});
+    },
+    [imported, navigate]
+  );
 
   if (error) return <Centered>Couldn't load the app ({error}).</Centered>;
   if (!projects || !catalog || !commands) return <Centered>Loading…</Centered>;
-  if (!projectId)
-    return (
-      <Centered>
-        No projects found. Add data/projects/&lt;id&gt;.json to get started.
-      </Centered>
-    );
+  if (!current) return <Centered>No projects found.</Centered>;
 
   return (
-    <Workspace
-      key={projectId}
-      projects={projects}
-      catalog={catalog}
-      commands={commands}
-      settings={settings}
-      adminKey={adminKey}
-      onAdminKey={setAdminKey}
-      projectId={projectId}
-      chatId={route.chatId}
-      navigate={navigate}
-    />
+    <>
+      <Workspace
+        key={current.id}
+        projects={projects}
+        project={current}
+        catalog={catalog}
+        commands={commands}
+        settings={settings}
+        chatId={route.chatId}
+        navigate={navigate}
+        onImportProject={() => setImporting(true)}
+        onDeleteProject={onDeleteProject}
+      />
+      {importing && (
+        <ImportProjectDialog
+          existingIds={projects.map((p) => p.id)}
+          onImport={onImported}
+          onClose={() => setImporting(false)}
+        />
+      )}
+    </>
   );
 }
 
 function Centered({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-center h-screen text-kumo-inactive">
+    <div className="flex items-center justify-center h-dvh text-kumo-inactive">
       {children}
     </div>
   );

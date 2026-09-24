@@ -1,17 +1,12 @@
-// Loads project source data from data/<category>/<project>.{csv,json}.
-// Files are bundled at build time (Workers have no runtime filesystem) and
-// validated against the shared Zod schemas; any malformed row fails fast with
-// the offending file and row number.
-import Papa from "papaparse";
-import { validate } from "./validate";
+// Demo projects bundled from data/<category>/<project>.{csv,json} at build
+// time (Workers have no runtime filesystem). They're read-only: each browser
+// works on its own copy. Malformed files fail startup naming the file and row.
 import {
-  MilestoneSchema,
-  ProjectMetaSchema,
-  PurchaseOrderSchema,
-  RaidItemSchema,
-  type ProjectState,
-  type ProjectSummary
-} from "./shared";
+  parseProjectFiles,
+  TABLE_CATEGORIES,
+  type ProjectFiles
+} from "./project-files";
+import type { ProjectState, ProjectSummary } from "./shared";
 
 const FILES = import.meta.glob<string>("../data/*/*.{csv,json}", {
   query: "?raw",
@@ -19,91 +14,41 @@ const FILES = import.meta.glob<string>("../data/*/*.{csv,json}", {
   eager: true
 });
 
-/** CSV categories and the schema each row must satisfy. */
-const TABLES = {
-  orders: PurchaseOrderSchema,
-  milestones: MilestoneSchema,
-  raid: RaidItemSchema
-} as const;
-type TableCategory = keyof typeof TABLES;
-
 const PATH_RE = /\/data\/([^/]+)\/([^/]+)\.(csv|json)$/;
 
-function parseCsv(
-  text: string,
-  file: string
-): Record<string, string | undefined>[] {
-  const { data, errors } = Papa.parse<Record<string, string>>(text, {
-    header: true,
-    skipEmptyLines: true,
-    transformHeader: (h) => h.trim(),
-    transform: (v) => v.trim()
-  });
-  if (errors.length > 0) {
-    throw new Error(
-      `CSV parse error in ${file} row ${errors[0].row}: ${errors[0].message}`
-    );
-  }
-  // Empty cells mean "not set" so optional schema fields validate.
-  return data.map((row) =>
-    Object.fromEntries(
-      Object.entries(row).map(([k, v]) => [k, v === "" ? undefined : v])
-    )
-  );
-}
-
-type SourceData = Pick<
-  ProjectState,
-  "project" | "orders" | "milestones" | "raid"
->;
-
-function loadProjects(): Record<string, SourceData> {
-  const metas = new Map<string, ProjectState["project"]>();
-  const tables = new Map<string, Partial<Record<TableCategory, unknown[]>>>();
-
+function loadProjects(): Record<string, ProjectState> {
+  const byProject = new Map<string, Partial<ProjectFiles>>();
   for (const [path, text] of Object.entries(FILES)) {
     const match = PATH_RE.exec(path);
     if (!match) continue;
     const [, category, projectId, ext] = match;
-    const file = `data/${category}/${projectId}.${ext}`;
-
-    if (category === "projects" && ext === "json") {
-      metas.set(projectId, {
-        id: projectId,
-        ...validate(ProjectMetaSchema, JSON.parse(text), file)
-      });
-    } else if (category in TABLES && ext === "csv") {
-      const schema = TABLES[category as TableCategory];
-      const rows = parseCsv(text, file).map((row, i) =>
-        validate(schema, row, `${file} row ${i + 2}`)
-      );
-      tables.set(projectId, { ...tables.get(projectId), [category]: rows });
-    } else {
+    const key =
+      category === "projects" && ext === "json"
+        ? "project"
+        : (TABLE_CATEGORIES as string[]).includes(category) && ext === "csv"
+          ? (category as keyof ProjectFiles)
+          : undefined;
+    if (!key) {
       throw new Error(
-        `Unrecognized data file ${file}: expected data/projects/<id>.json or data/{${Object.keys(TABLES).join(",")}}/<id>.csv`
+        `Unrecognized data file data/${category}/${projectId}.${ext}: expected data/projects/<id>.json or data/{${TABLE_CATEGORIES.join(",")}}/<id>.csv`
       );
     }
-  }
-
-  for (const id of tables.keys()) {
-    if (!metas.has(id))
-      throw new Error(
-        `Data files exist for "${id}" but data/projects/${id}.json is missing`
-      );
+    byProject.set(projectId, { ...byProject.get(projectId), [key]: text });
   }
 
   return Object.fromEntries(
-    [...metas].map(([id, project]) => {
-      const t = tables.get(id) ?? {};
-      return [
-        id,
-        {
-          project,
-          orders: (t.orders ?? []) as ProjectState["orders"],
-          milestones: (t.milestones ?? []) as ProjectState["milestones"],
-          raid: (t.raid ?? []) as ProjectState["raid"]
-        }
-      ];
+    [...byProject].map(([id, files]) => {
+      if (!files.project)
+        throw new Error(
+          `Data files exist for "${id}" but data/projects/${id}.json is missing`
+        );
+      const names = Object.fromEntries(
+        (["project", ...TABLE_CATEGORIES] as const).map((k) => [
+          k,
+          k === "project" ? `data/projects/${id}.json` : `data/${k}/${id}.csv`
+        ])
+      );
+      return [id, parseProjectFiles(id, files as ProjectFiles, names)];
     })
   );
 }
@@ -115,16 +60,8 @@ export const listProjects = (): ProjectSummary[] =>
     .map(({ project: { id, name, site } }) => ({ id, name, site }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
-export const projectExists = (id: string) => id in PROJECTS;
-
-/** Fresh, mutable project data from source files (chats are owned by the ProjectAgent). */
-export function loadProjectData(id: string): Omit<ProjectState, "chats"> {
+/** A demo project's starting data (the browser keeps its own working copy). */
+export function demoProject(id: string): ProjectState | undefined {
   const source = PROJECTS[id];
-  if (!source) throw new Error(`Unknown project "${id}"`);
-  return {
-    ...structuredClone(source),
-    activity: [
-      { ts: new Date().toISOString(), text: `Loaded from data/*/${id}.*` }
-    ]
-  };
+  return source && structuredClone(source);
 }

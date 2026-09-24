@@ -10,12 +10,10 @@
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/agents/*", "/api/*"]
   },
+  // Only admin Settings are stored on the server; chats and project data
+  // live in each user's browser.
   "durable_objects": {
-    "bindings": [
-      { "class_name": "ProjectAgent", "name": "ProjectAgent" },
-      { "class_name": "ChatAgent", "name": "ChatAgent" },
-      { "class_name": "SettingsAgent", "name": "SettingsAgent" }
-    ]
+    "bindings": [{ "class_name": "SettingsAgent", "name": "SettingsAgent" }]
   },
   // Bounds Workers AI spend and admin-key guessing (see src/agents/guards.ts).
   "ratelimits": [
@@ -23,13 +21,6 @@
       "name": "RATE_LIMITER",
       "namespace_id": "1001",
       "simple": { "limit": 20, "period": 60 }
-    }
-  ],
-  "workflows": [
-    {
-      "name": "cf-ai-supply-chain-copilot-playbook",
-      "binding": "PLAYBOOK_WORKFLOW",
-      "class_name": "PlaybookWorkflow"
     }
   ],
   "migrations": [
@@ -40,6 +31,12 @@
     {
       "new_sqlite_classes": ["SettingsAgent"],
       "tag": "v2"
+    },
+    {
+      // Chats and project data moved to the browser: delete the per-project
+      // and per-chat Durable Objects along with everything they stored.
+      "deleted_classes": ["ProjectAgent", "ChatAgent"],
+      "tag": "v3"
     }
   ]
 }

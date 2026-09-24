@@ -115,6 +115,27 @@ The fresh resolve also pulled in `@cloudflare/ai-chat` 0.9.4, which broke chat c
 - **Layout:** fixed the overflowing command cards, the dashboard and sidebar breakpoints (the sidebar is now a drawer on phones), and table wrapping. Verified by measurement at 375, 768, 1024, 1280 and 1440 px.
 - **Tooltips:** added to every clickable control, including disabled ones, where they explain why the control is unavailable.
 
+## 10. Chats and data belong to each user's browser
+
+> Chats are shared by everyone who opens the app. WHY? I DID NOT ASK FOR CHATS TO BE SHARED BY EVERYONE, ONLY PROJECT DATA IS ACCESSIBLE BUT CHATS SHOULD BE STORED WITHIN EACH USER'S OWN BROWSER, NOT SHARED GLOBALLY. ALSO, IF THE USER HAS NEW PROJECT DATA, THAT MUST BE STORED IN THE BROWSER AND WARN THEM THAT THIS APP IS CURRENTLY IN DEMO MODE AND DOESNT PERMANENTLY STORE ANY DATA. WE DO NOT WANT ANYONE USING UP OUR STORAGE OR SERVERS.
+>
+> VOICE INPUT IS RECOGNIZING MY VOICE BUT IT REPLACES THE EXISTING TEXT IF I GAVE A GAP IN MY SPEECH AND TRY TO CONTINUE WITH MORE INPUT. · AND I AM NOT ABLE TO DELETE CHATS
+>
+> _(choices: workflows run from the browser; projects are imported from files)_
+
+**Outcome:** the architecture was redesigned so the server stores no user data:
+
+- **Storage:** chats, messages, project changes, reminders and imported projects live in the browser's IndexedDB.
+- **Stateless requests:** `/api/chat` receives the conversation and the project, runs the tools on that copy, and streams each change back for the browser to save.
+- **Workflows** run step by step from the browser.
+- **Cleanup:** the per-project and per-chat Durable Objects were deleted along with their stored data.
+- **UI:** a demo-mode banner explains what's stored; an **Import project** dialog validates files with the same parser as `data/`.
+- **Fixes:**
+  - Dictation now appends across pauses.
+  - Chats can always be deleted.
+  - Impossible dates are rejected.
+  - Duplicate reminders are prevented.
+
 ---
 
 ## Runtime prompts (what the agent itself is told)

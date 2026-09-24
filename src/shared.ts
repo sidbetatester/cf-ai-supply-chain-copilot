@@ -8,9 +8,16 @@ const text = (max: number) => z.string().trim().min(1).max(max);
 const SHORT = 120;
 const LONG = 600;
 
+/** A real calendar date: "2026-02-30" parses but rolls over, so it round-trips. */
+const isCalendarDate = (s: string) => {
+  const d = new Date(`${s}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+};
+
 export const isoDate = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD")
+  .refine(isCalendarDate, "Not a real calendar date")
   .describe("YYYY-MM-DD");
 
 export const POStatusSchema = z.enum([
@@ -92,32 +99,57 @@ export type RaidItem = z.infer<typeof RaidItemSchema>;
 export type MilestoneStatus = z.infer<typeof MilestoneStatusSchema>;
 export type RaidType = z.infer<typeof RaidTypeSchema>;
 
-export interface ActivityEntry {
-  ts: string;
-  text: string;
-}
+export const ActivityEntrySchema = z.object({
+  ts: z.string().max(40),
+  text: text(LONG)
+});
 
+/** A one-off follow-up reminder; the browser shows it when it's due. */
+export const ReminderSchema = z.object({
+  id: text(40),
+  description: text(LONG),
+  dueAt: z.string().max(40).describe("ISO date-time"),
+  fired: z.boolean().default(false)
+});
+
+/** Size limits for one project (each browser's copy, and what it may send the server). */
+export const LIMITS = {
+  orders: 500,
+  milestones: 100,
+  raid: 500,
+  activity: 50,
+  reminders: 50,
+  chats: 50
+} as const;
+
+/**
+ * A project's working data. Demo projects start from data/; each browser
+ * keeps and edits its own copy (the server stores none of it).
+ */
+export const ProjectStateSchema = z.object({
+  project: ProjectMetaSchema.extend({ id: text(64) }),
+  orders: z.array(PurchaseOrderSchema).max(LIMITS.orders),
+  milestones: z.array(MilestoneSchema).max(LIMITS.milestones),
+  raid: z.array(RaidItemSchema).max(LIMITS.raid),
+  activity: z.array(ActivityEntrySchema).max(LIMITS.activity).default([]),
+  reminders: z.array(ReminderSchema).max(LIMITS.reminders).default([])
+});
+
+export type ActivityEntry = z.infer<typeof ActivityEntrySchema>;
+export type Reminder = z.infer<typeof ReminderSchema>;
+export type ProjectState = z.infer<typeof ProjectStateSchema>;
+
+/** A chat, stored in the browser with its messages. */
 export interface ChatMeta {
   id: string;
   title: string;
   createdAt: string;
-  /** SHA-256 of the creating browser's owner token (see ProjectAgent.createChat). */
-  ownerHash?: string;
 }
 
 export interface ProjectSummary {
   id: string;
   name: string;
   site: string;
-}
-
-export interface ProjectState {
-  project: ProjectMeta & { id: string };
-  orders: PurchaseOrder[];
-  milestones: Milestone[];
-  raid: RaidItem[];
-  activity: ActivityEntry[];
-  chats: ChatMeta[];
 }
 
 export const DEFAULT_CHAT_TITLE = "New chat";
@@ -139,19 +171,6 @@ export const sha256Hex = async (text: string) =>
   ]
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
-
-/** ChatAgent instances are named "<projectId>--<chatId>". */
-const CHAT_NAME_SEP = "--";
-export const chatAgentName = (projectId: string, chatId: string) =>
-  `${projectId}${CHAT_NAME_SEP}${chatId}`;
-export const parseChatAgentName = (name: string) => {
-  const i = name.lastIndexOf(CHAT_NAME_SEP);
-  if (i <= 0) throw new Error(`Invalid chat agent name "${name}"`);
-  return {
-    projectId: name.slice(0, i),
-    chatId: name.slice(i + CHAT_NAME_SEP.length)
-  };
-};
 
 export interface ScheduleRisk {
   poId: string;
