@@ -107,10 +107,7 @@ export function Chat({
   );
 
   const { messages, sendMessage, addToolApprovalResponse, stop, status } =
-    useAgentChat({
-      agent,
-      experimental_throttle: 100
-    });
+    useAgentChat({ agent });
 
   const isStreaming = status === "streaming" || status === "submitted";
 
