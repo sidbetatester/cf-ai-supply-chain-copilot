@@ -8,8 +8,18 @@ export const isoDate = z
   .regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD")
   .describe("YYYY-MM-DD");
 
-export const POStatusSchema = z.enum(["open", "shipped", "delivered", "delayed"]);
-export const MilestoneStatusSchema = z.enum(["on-track", "at-risk", "late", "done"]);
+export const POStatusSchema = z.enum([
+  "open",
+  "shipped",
+  "delivered",
+  "delayed"
+]);
+export const MilestoneStatusSchema = z.enum([
+  "on-track",
+  "at-risk",
+  "late",
+  "done"
+]);
 export const RaidTypeSchema = z.enum(["Risk", "Action", "Issue", "Decision"]);
 export const SeveritySchema = z.enum(["low", "medium", "high"]);
 
@@ -27,7 +37,10 @@ export const PurchaseOrderSchema = z.object({
   qty: z.coerce.number().int().positive(),
   eta: isoDate.describe("Arrival at destination port, YYYY-MM-DD"),
   status: POStatusSchema,
-  milestoneId: z.string().optional().describe("Milestone id this delivery gates, e.g. M2")
+  milestoneId: z
+    .string()
+    .optional()
+    .describe("Milestone id this delivery gates, e.g. M2")
 });
 
 export const MilestoneSchema = z.object({
@@ -47,6 +60,26 @@ export const RaidItemSchema = z.object({
   status: z.enum(["open", "closed"])
 });
 
+// Mutation inputs: used as LLM tool input schemas and ProjectAgent RPC params.
+export const PurchaseOrderPatchSchema = PurchaseOrderSchema.partial().required({
+  id: true
+});
+export const MilestoneUpdateSchema = MilestoneSchema.pick({
+  id: true,
+  due: true,
+  status: true
+})
+  .partial({ due: true, status: true })
+  .extend({ reason: z.string().describe("Why this change is being made") });
+export const NewRaidItemSchema = RaidItemSchema.omit({
+  id: true,
+  status: true
+});
+
+export type PurchaseOrderPatch = z.infer<typeof PurchaseOrderPatchSchema>;
+export type MilestoneUpdate = z.infer<typeof MilestoneUpdateSchema>;
+export type NewRaidItem = z.infer<typeof NewRaidItemSchema>;
+
 export type ProjectMeta = z.infer<typeof ProjectMetaSchema>;
 export type PurchaseOrder = z.infer<typeof PurchaseOrderSchema>;
 export type Milestone = z.infer<typeof MilestoneSchema>;
@@ -59,13 +92,41 @@ export interface ActivityEntry {
   text: string;
 }
 
+export interface ChatMeta {
+  id: string;
+  title: string;
+  createdAt: string;
+}
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  site: string;
+}
+
 export interface ProjectState {
   project: ProjectMeta & { id: string };
   orders: PurchaseOrder[];
   milestones: Milestone[];
   raid: RaidItem[];
   activity: ActivityEntry[];
+  chats: ChatMeta[];
 }
+
+export const DEFAULT_CHAT_TITLE = "New chat";
+
+/** ChatAgent instances are named "<projectId>--<chatId>". */
+const CHAT_NAME_SEP = "--";
+export const chatAgentName = (projectId: string, chatId: string) =>
+  `${projectId}${CHAT_NAME_SEP}${chatId}`;
+export const parseChatAgentName = (name: string) => {
+  const i = name.lastIndexOf(CHAT_NAME_SEP);
+  if (i <= 0) throw new Error(`Invalid chat agent name "${name}"`);
+  return {
+    projectId: name.slice(0, i),
+    chatId: name.slice(i + CHAT_NAME_SEP.length)
+  };
+};
 
 export interface ScheduleRisk {
   poId: string;

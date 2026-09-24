@@ -1,82 +1,93 @@
-import { Suspense, useCallback, useState, useEffect, useRef } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useAgent } from "agents/react";
-import { useAgentChat } from "@cloudflare/ai-chat/react";
-import { getToolName, isToolUIPart, type UIMessage } from "ai";
-import type { SupplyChainAgent } from "./server";
-import type { ProjectState } from "./shared";
-import { Dashboard } from "./dashboard";
-import {
-  Badge,
-  Button,
-  Empty,
-  InputArea,
-  PoweredByCloudflare,
-  Surface,
-  Switch,
-  Text
-} from "@cloudflare/kumo";
+import { Badge, Button, Switch, Text } from "@cloudflare/kumo";
 import { Toasty, useKumoToastManager } from "@cloudflare/kumo/components/toast";
-import { Streamdown } from "streamdown";
-import { code } from "@streamdown/code";
 import {
-  PaperPlaneRightIcon,
-  StopIcon,
   ArrowCounterClockwiseIcon,
-  GearIcon,
-  TruckIcon,
+  BugIcon,
+  ChartBarIcon,
   CircleIcon,
+  ListIcon,
   MoonIcon,
   SunIcon,
-  CheckCircleIcon,
-  XCircleIcon,
-  BrainIcon,
-  CaretDownIcon,
-  BugIcon,
-  MicrophoneIcon,
-  ChartBarIcon
+  TruckIcon
 } from "@phosphor-icons/react";
+import type { ProjectAgent } from "./agents/project-agent";
+import type { ProjectState, ProjectSummary } from "./shared";
+import { Chat } from "./components/chat";
+import { Dashboard } from "./components/dashboard";
+import { Sidebar } from "./components/sidebar";
 
-// ── Voice input (browser Web Speech API, no backend needed) ──────────
+// ── Routing: #/<projectId>/<chatId> ───────────────────────────────────
 
-type SpeechRecognitionLike = {
-  lang: string;
-  interimResults: boolean;
-  onresult: (e: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void;
-  onend: () => void;
-  start: () => void;
-  stop: () => void;
-};
-
-function getSpeechRecognition(): (new () => SpeechRecognitionLike) | undefined {
-  const w = window as unknown as Record<string, unknown>;
-  return (w.SpeechRecognition ?? w.webkitSpeechRecognition) as
-    | (new () => SpeechRecognitionLike)
-    | undefined;
+interface Route {
+  projectId?: string;
+  chatId?: string;
 }
 
-const SUGGESTED_PROMPTS = [
-  "What's our biggest schedule risk right now?",
-  "Here are notes from today's supplier sync: Contoso says the core switches slip a week due to a chip shortage, new ETA 2026-11-25. Northwind confirmed servers ship on time. Decision: we'll pre-stage optics in the racks before switches arrive. Ade to get an air-freight quote by Friday.",
-  "Draft a weekly status report for leadership",
-  "Remind me in 1 minute to chase Contoso on the switch ETA"
-];
+const parseHash = (): Route => {
+  const [projectId, chatId] = window.location.hash
+    .replace(/^#\/?/, "")
+    .split("/");
+  return { projectId: projectId || undefined, chatId: chatId || undefined };
+};
 
-// ── Small components ──────────────────────────────────────────────────
+function useHashRoute() {
+  const [route, setRoute] = useState(parseHash);
+  useEffect(() => {
+    const onChange = () => setRoute(parseHash());
+    window.addEventListener("hashchange", onChange);
+    return () => window.removeEventListener("hashchange", onChange);
+  }, []);
+  const navigate = useCallback((next: Route, { replace = false } = {}) => {
+    const hash = `#/${[next.projectId, next.chatId].filter(Boolean).join("/")}`;
+    if (replace) window.history.replaceState(null, "", hash);
+    else window.history.pushState(null, "", hash);
+    setRoute(next);
+  }, []);
+  return [route, navigate] as const;
+}
+
+// ── Per-viewer preferences (best effort; storage may be unavailable) ──
+
+function usePersistentFlag(key: string, initial: boolean) {
+  const [value, setValue] = useState(() => {
+    try {
+      const stored = localStorage.getItem(key);
+      return stored === null ? initial : stored === "1";
+    } catch {
+      return initial;
+    }
+  });
+  const update = useCallback(
+    (next: boolean) => {
+      setValue(next);
+      try {
+        localStorage.setItem(key, next ? "1" : "0");
+      } catch {
+        // Preference just won't persist.
+      }
+    },
+    [key]
+  );
+  return [value, update] as const;
+}
 
 function ThemeToggle() {
   const [dark, setDark] = useState(
     () => document.documentElement.getAttribute("data-mode") === "dark"
   );
-
   const toggle = useCallback(() => {
-    const next = !dark;
-    setDark(next);
-    const mode = next ? "dark" : "light";
+    const mode = dark ? "light" : "dark";
+    setDark(!dark);
     document.documentElement.setAttribute("data-mode", mode);
     document.documentElement.style.colorScheme = mode;
-    localStorage.setItem("theme", mode);
+    try {
+      localStorage.setItem("theme", mode);
+    } catch {
+      // Preference just won't persist.
+    }
   }, [dark]);
-
   return (
     <Button
       variant="secondary"
@@ -88,198 +99,38 @@ function ThemeToggle() {
   );
 }
 
-// ── Tool rendering ────────────────────────────────────────────────────
+// ── Workspace: one connected project ──────────────────────────────────
 
-function ToolIO({ label, value }: { label: string; value: unknown }) {
-  if (value === undefined || value === null) return null;
-  const text =
-    typeof value === "string" ? value : JSON.stringify(value, null, 2);
-  if (!text) return null;
-  return (
-    <div className="mt-1">
-      <Text size="xs" variant="secondary" bold>
-        {label}
-      </Text>
-      <pre className="mt-0.5 font-mono text-xs text-kumo-subtle whitespace-pre-wrap overflow-auto max-h-64">
-        {text}
-      </pre>
-    </div>
-  );
-}
-
-function ToolPartView({
-  part,
-  addToolApprovalResponse
+function Workspace({
+  projects,
+  projectId,
+  chatId,
+  navigate
 }: {
-  part: UIMessage["parts"][number];
-  addToolApprovalResponse: (response: {
-    id: string;
-    approved: boolean;
-  }) => void;
+  projects: ProjectSummary[];
+  projectId: string;
+  chatId: string | undefined;
+  navigate: ReturnType<typeof useHashRoute>[1];
 }) {
-  if (!isToolUIPart(part)) return null;
-  const toolName = getToolName(part);
-
-  // Completed
-  if (part.state === "output-available") {
-    return (
-      <div className="flex justify-start">
-        <Surface className="max-w-[85%] px-3 py-1.5 rounded-xl ring ring-kumo-line">
-          <details>
-            <summary className="flex items-center gap-2 cursor-pointer select-none list-none">
-              <GearIcon size={14} className="text-kumo-inactive" />
-              <Text size="xs" variant="secondary" bold>
-                {toolName}
-              </Text>
-              <Badge variant="secondary">Done</Badge>
-              <CaretDownIcon size={12} className="text-kumo-inactive" />
-            </summary>
-            <ToolIO label="Input" value={part.input} />
-            <ToolIO label="Output" value={part.output} />
-          </details>
-        </Surface>
-      </div>
-    );
-  }
-
-  // Needs approval
-  if ("approval" in part && part.state === "approval-requested") {
-    const approvalId = (part.approval as { id?: string })?.id;
-    return (
-      <div className="flex justify-start">
-        <Surface className="max-w-[85%] px-4 py-3 rounded-xl ring-2 ring-kumo-warning">
-          <div className="flex items-center gap-2 mb-2">
-            <GearIcon size={14} className="text-kumo-warning" />
-            <Text size="sm" bold>
-              Approval needed: {toolName}
-            </Text>
-          </div>
-          <div className="font-mono mb-3">
-            <Text size="xs" variant="secondary">
-              {JSON.stringify(part.input, null, 2)}
-            </Text>
-          </div>
-          <div className="flex gap-2">
-            <Button
-              variant="primary"
-              size="sm"
-              icon={<CheckCircleIcon size={14} />}
-              onClick={() => {
-                if (approvalId) {
-                  addToolApprovalResponse({ id: approvalId, approved: true });
-                }
-              }}
-            >
-              Approve
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              icon={<XCircleIcon size={14} />}
-              onClick={() => {
-                if (approvalId) {
-                  addToolApprovalResponse({ id: approvalId, approved: false });
-                }
-              }}
-            >
-              Reject
-            </Button>
-          </div>
-        </Surface>
-      </div>
-    );
-  }
-
-  // Rejected / denied
-  if (
-    part.state === "output-denied" ||
-    ("approval" in part &&
-      (part.approval as { approved?: boolean })?.approved === false)
-  ) {
-    return (
-      <div className="flex justify-start">
-        <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring ring-kumo-line">
-          <div className="flex items-center gap-2">
-            <XCircleIcon size={14} className="text-kumo-danger" />
-            <Text size="xs" variant="secondary" bold>
-              {toolName}
-            </Text>
-            <Badge variant="secondary">Rejected</Badge>
-          </div>
-        </Surface>
-      </div>
-    );
-  }
-
-  // Errored
-  if (part.state === "output-error") {
-    const errorText = part.errorText;
-    return (
-      <div className="flex justify-start">
-        <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring-2 ring-kumo-danger">
-          <div className="flex items-center gap-2 mb-1">
-            <XCircleIcon size={14} className="text-kumo-danger" />
-            <Text size="xs" variant="secondary" bold>
-              {toolName}
-            </Text>
-            <Badge variant="destructive">Error</Badge>
-          </div>
-          <div className="font-mono">
-            <Text size="xs" variant="secondary">
-              {errorText || "Tool call failed"}
-            </Text>
-          </div>
-        </Surface>
-      </div>
-    );
-  }
-
-  // Executing
-  if (part.state === "input-available" || part.state === "input-streaming") {
-    return (
-      <div className="flex justify-start">
-        <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring ring-kumo-line">
-          <div className="flex items-center gap-2">
-            <GearIcon size={14} className="text-kumo-inactive animate-spin" />
-            <Text size="xs" variant="secondary">
-              Running {toolName}...
-            </Text>
-          </div>
-          <ToolIO label="Input" value={part.input} />
-        </Surface>
-      </div>
-    );
-  }
-
-  return null;
-}
-
-
-// ── Main app ──────────────────────────────────────────────────────────
-
-function Chat() {
-  const [connected, setConnected] = useState(false);
-  const [input, setInput] = useState("");
-  const [showDebug, setShowDebug] = useState(false);
-  const [showDashboard, setShowDashboard] = useState(false); // mobile toggle
-  const [projectState, setProjectState] = useState<ProjectState>();
-  const [listening, setListening] = useState(false);
-  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const toasts = useKumoToastManager();
+  const [state, setState] = useState<ProjectState>();
+  const [chatConnected, setChatConnected] = useState(false);
+  const [showDebug, setShowDebug] = useState(false);
+  const [showDashboard, setShowDashboard] = useState(false); // small screens
+  const [sidebarCollapsed, setSidebarCollapsed] = usePersistentFlag(
+    "sidebarCollapsed",
+    window.innerWidth < 768
+  );
 
-  const agent = useAgent<SupplyChainAgent, ProjectState>({
-    agent: "SupplyChainAgent",
-    name: "los-02", // one Durable Object per program
-    onOpen: useCallback(() => setConnected(true), []),
-    onClose: useCallback(() => setConnected(false), []),
-    onStateUpdate: useCallback((s: ProjectState) => setProjectState(s), []),
+  const project = useAgent<ProjectAgent, ProjectState>({
+    agent: "ProjectAgent",
+    name: projectId,
+    onStateUpdate: useCallback((s: ProjectState) => setState(s), []),
     onMessage: useCallback(
       (message: MessageEvent) => {
         try {
           const data = JSON.parse(String(message.data));
-          if (data.type === "scheduled-task") {
+          if (data.type === "reminder") {
             toasts.add({
               title: "⏰ Reminder",
               description: data.description,
@@ -287,77 +138,57 @@ function Chat() {
             });
           }
         } catch {
-          // Not JSON or not our event
+          // Not one of our events.
         }
       },
       [toasts]
     )
   });
 
-  const {
-    messages,
-    sendMessage,
-    clearHistory,
-    addToolApprovalResponse,
-    stop,
-    status
-  } = useAgentChat({ agent, experimental_throttle: 100 });
-
-  const isStreaming = status === "streaming" || status === "submitted";
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
-
-  useEffect(() => {
-    if (!isStreaming && textareaRef.current) textareaRef.current.focus();
-  }, [isStreaming]);
-
-  const sendText = useCallback(
-    (text: string) => sendMessage({ role: "user", parts: [{ type: "text", text }] }),
-    [sendMessage]
+  const selectChat = useCallback(
+    (id: string, opts?: { replace?: boolean }) =>
+      navigate({ projectId, chatId: id }, opts),
+    [navigate, projectId]
   );
 
-  const send = useCallback(() => {
-    const text = input.trim();
-    if (!text || isStreaming) return;
-    setInput("");
-    sendText(text);
-    if (textareaRef.current) textareaRef.current.style.height = "auto";
-  }, [input, isStreaming, sendText]);
+  const newChat = useCallback(async () => {
+    const chat = await project.stub.createChat();
+    selectChat(chat.id);
+  }, [project, selectChat]);
 
-  const SpeechRecognition = getSpeechRecognition();
-  const toggleVoice = useCallback(() => {
-    if (!SpeechRecognition) return;
-    if (listening) {
-      recognitionRef.current?.stop();
-      return;
-    }
-    const rec = new SpeechRecognition();
-    rec.lang = "en-US";
-    rec.interimResults = true;
-    rec.onresult = (e) => {
-      setInput(Array.from(e.results).map((r) => r[0].transcript).join(""));
-    };
-    rec.onend = () => setListening(false);
-    recognitionRef.current = rec;
-    setListening(true);
-    rec.start();
-  }, [SpeechRecognition, listening]);
+  // Keep the route pointing at a real chat: open the newest, or create one.
+  const chats = state?.chats;
+  useEffect(() => {
+    if (!chats || (chatId && chats.some((c) => c.id === chatId))) return;
+    if (chats.length > 0) selectChat(chats[0].id, { replace: true });
+    else
+      project.stub
+        .createChat()
+        .then((c) => selectChat(c.id, { replace: true }));
+  }, [chats, chatId, project, selectChat]);
 
-  const resetDemo = useCallback(async () => {
-    clearHistory();
-    await agent.stub.resetProject();
-  }, [agent, clearHistory]);
+  const activeChat =
+    chatId && chats?.some((c) => c.id === chatId) ? chatId : undefined;
 
   return (
     <div className="flex flex-col h-screen bg-kumo-elevated">
-      {/* Header */}
-      <header className="px-5 py-3 bg-kumo-base border-b border-kumo-line">
+      <header className="px-4 py-3 bg-kumo-base border-b border-kumo-line">
         <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <Button
+              variant="ghost"
+              shape="square"
+              className="md:hidden"
+              aria-label="Toggle sidebar"
+              icon={<ListIcon size={18} />}
+              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+            />
             <h1 className="text-lg font-semibold text-kumo-default truncate">
-              <TruckIcon size={20} weight="duotone" className="inline mr-2 -mt-0.5 text-kumo-brand" />
+              <TruckIcon
+                size={20}
+                weight="duotone"
+                className="inline mr-2 -mt-0.5 text-kumo-brand"
+              />
               Supply Chain Copilot
             </h1>
             <Badge variant="secondary" className="hidden sm:inline-flex">
@@ -369,10 +200,12 @@ function Chat() {
               <CircleIcon
                 size={8}
                 weight="fill"
-                className={connected ? "text-kumo-success" : "text-kumo-danger"}
+                className={
+                  chatConnected ? "text-kumo-success" : "text-kumo-danger"
+                }
               />
               <Text size="xs" variant="secondary">
-                {connected ? "Connected" : "Disconnected"}
+                {chatConnected ? "Connected" : "Connecting…"}
               </Text>
             </div>
             <div className="hidden sm:flex items-center gap-1.5">
@@ -396,203 +229,115 @@ function Chat() {
             <Button
               variant="secondary"
               icon={<ArrowCounterClockwiseIcon size={16} />}
-              onClick={resetDemo}
+              onClick={() => {
+                if (
+                  confirm(
+                    "Reload this project's data from its source files? Changes made in chats will be discarded."
+                  )
+                ) {
+                  project.stub.resetProject();
+                }
+              }}
             >
-              <span className="hidden sm:inline">Reset demo</span>
+              <span className="hidden sm:inline">Reload data</span>
             </Button>
           </div>
         </div>
       </header>
 
       <div className="flex flex-1 min-h-0">
-        {/* Chat column */}
-        <main className={`flex-1 flex flex-col min-w-0 ${showDashboard ? "hidden lg:flex" : "flex"}`}>
-          <div className="flex-1 overflow-y-auto">
-            <div className="max-w-3xl mx-auto px-5 py-6 space-y-5">
-              {messages.length === 0 && (
-                <Empty
-                  icon={<TruckIcon size={32} />}
-                  title="Your program copilot"
-                  description="Ask about schedule risk, paste meeting notes to update the RAID log, or draft a status report. Changes appear live on the dashboard."
-                  contents={
-                    <div className="flex flex-col items-stretch gap-2 max-w-xl">
-                      {SUGGESTED_PROMPTS.map((prompt) => (
-                        <Button
-                          key={prompt}
-                          variant="outline"
-                          size="sm"
-                          className="h-auto! py-2 text-left whitespace-normal justify-start"
-                          disabled={isStreaming || !connected}
-                          onClick={() => sendText(prompt)}
-                        >
-                          {prompt.length > 110 ? `📋 ${prompt.slice(0, 107)}…` : prompt}
-                        </Button>
-                      ))}
-                    </div>
-                  }
-                />
-              )}
+        <Sidebar
+          projects={projects}
+          activeProjectId={projectId}
+          chats={chats ?? []}
+          activeChatId={activeChat}
+          collapsed={sidebarCollapsed}
+          onToggleCollapsed={() => setSidebarCollapsed(!sidebarCollapsed)}
+          onSelectProject={(id) => navigate({ projectId: id })}
+          onSelectChat={selectChat}
+          onNewChat={newChat}
+          onRenameChat={(id, title) => project.stub.renameChat(id, title)}
+          onDeleteChat={(id) => project.stub.deleteChat(id)}
+        />
 
-              {messages.map((message: UIMessage, index: number) => {
-                const isUser = message.role === "user";
-                const isLastAssistant =
-                  message.role === "assistant" && index === messages.length - 1;
-
-                return (
-                  <div key={message.id} className="space-y-2">
-                    {showDebug && (
-                      <pre className="text-[11px] text-kumo-subtle bg-kumo-control rounded-lg p-3 overflow-auto max-h-64">
-                        {JSON.stringify(message, null, 2)}
-                      </pre>
-                    )}
-
-                    {message.parts.map((part, i) => {
-                      const key = `${message.id}-${i}`;
-
-                      if (isToolUIPart(part)) {
-                        return (
-                          <ToolPartView
-                            key={key}
-                            part={part}
-                            addToolApprovalResponse={addToolApprovalResponse}
-                          />
-                        );
-                      }
-
-                      if (part.type === "reasoning") {
-                        if (!part.text.trim()) return null;
-                        const isDone = part.state === "done" || !isStreaming;
-                        return (
-                          <div key={key} className="flex justify-start">
-                            <details className="max-w-[85%] w-full" open={!isDone}>
-                              <summary className="flex items-center gap-2 cursor-pointer px-3 py-2 rounded-lg bg-purple-500/10 border border-purple-500/20 text-sm select-none">
-                                <BrainIcon size={14} className="text-purple-400" />
-                                <span className="font-medium text-kumo-default">Reasoning</span>
-                                <CaretDownIcon size={14} className="ml-auto text-kumo-inactive" />
-                              </summary>
-                              <pre className="mt-2 px-3 py-2 rounded-lg bg-kumo-control text-xs text-kumo-default whitespace-pre-wrap overflow-auto max-h-64">
-                                {part.text}
-                              </pre>
-                            </details>
-                          </div>
-                        );
-                      }
-
-                      if (part.type === "text") {
-                        if (!part.text) return null;
-                        if (isUser) {
-                          return (
-                            <div key={key} className="flex justify-end">
-                              <div className="max-w-[85%] px-4 py-2.5 rounded-2xl rounded-br-md bg-kumo-contrast text-kumo-inverse leading-relaxed whitespace-pre-wrap">
-                                {part.text}
-                              </div>
-                            </div>
-                          );
-                        }
-                        return (
-                          <div key={key} className="flex justify-start">
-                            <div className="max-w-[85%] rounded-2xl rounded-bl-md bg-kumo-base text-kumo-default leading-relaxed">
-                              <Streamdown
-                                className="sd-theme rounded-2xl rounded-bl-md p-3"
-                                plugins={{ code }}
-                                controls={false}
-                                isAnimating={isLastAssistant && isStreaming}
-                              >
-                                {part.text}
-                              </Streamdown>
-                            </div>
-                          </div>
-                        );
-                      }
-
-                      return null;
-                    })}
-                  </div>
-                );
-              })}
-
-              <div ref={messagesEndRef} />
-            </div>
-          </div>
-
-          {/* Input */}
-          <div className="border-t border-kumo-line bg-kumo-base">
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                send();
-              }}
-              className="max-w-3xl mx-auto px-5 py-4"
-            >
-              <div className="flex items-end gap-3 rounded-xl border border-kumo-line bg-kumo-base p-3 shadow-sm focus-within:ring-2 focus-within:ring-kumo-ring focus-within:border-transparent transition-shadow">
-                {SpeechRecognition && (
-                  <Button
-                    type="button"
-                    variant={listening ? "primary" : "ghost"}
-                    shape="square"
-                    aria-label={listening ? "Stop voice input" : "Start voice input"}
-                    icon={<MicrophoneIcon size={18} className={listening ? "animate-pulse" : ""} />}
-                    onClick={toggleVoice}
-                    disabled={!connected || isStreaming}
-                    className="mb-0.5"
-                  />
-                )}
-                <InputArea
-                  ref={textareaRef}
-                  value={input}
-                  onValueChange={setInput}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      send();
-                    }
-                  }}
-                  onInput={(e) => {
-                    const el = e.currentTarget;
-                    el.style.height = "auto";
-                    el.style.height = `${el.scrollHeight}px`;
-                  }}
-                  placeholder={listening ? "Listening…" : "Ask about the program, or paste meeting notes…"}
-                  disabled={!connected || isStreaming}
-                  rows={1}
-                  className="flex-1 ring-0! focus:ring-0! shadow-none! bg-transparent! outline-none! resize-none max-h-40"
-                />
-                {isStreaming ? (
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    shape="square"
-                    aria-label="Stop generation"
-                    icon={<StopIcon size={18} />}
-                    onClick={stop}
-                    className="mb-0.5"
-                  />
-                ) : (
-                  <Button
-                    type="submit"
-                    variant="primary"
-                    shape="square"
-                    aria-label="Send message"
-                    disabled={!input.trim() || !connected}
-                    icon={<PaperPlaneRightIcon size={18} />}
-                    className="mb-0.5"
-                  />
-                )}
-              </div>
-            </form>
-            <div className="flex justify-center pb-3">
-              <PoweredByCloudflare href="https://developers.cloudflare.com/agents/" />
-            </div>
-          </div>
-        </main>
-
-        {/* Live dashboard, synced from agent state */}
-        <aside
-          className={`w-full lg:w-[460px] shrink-0 border-l border-kumo-line bg-kumo-base overflow-y-auto ${showDashboard ? "block" : "hidden lg:block"}`}
+        <div
+          className={`flex-1 min-w-0 ${showDashboard ? "hidden lg:flex" : "flex"}`}
         >
-          <Dashboard state={projectState} />
+          {activeChat ? (
+            <Chat
+              key={activeChat}
+              projectId={projectId}
+              chatId={activeChat}
+              showDebug={showDebug}
+              onConnectionChange={setChatConnected}
+            />
+          ) : (
+            <div className="flex-1 flex items-center justify-center text-kumo-inactive text-sm">
+              Loading chat…
+            </div>
+          )}
+        </div>
+
+        <aside
+          className={`w-full lg:w-[440px] shrink-0 border-l border-kumo-line bg-kumo-base overflow-y-auto ${showDashboard ? "block" : "hidden lg:block"}`}
+        >
+          <Dashboard state={state} />
         </aside>
       </div>
+    </div>
+  );
+}
+
+// ── App ───────────────────────────────────────────────────────────────
+
+function Shell() {
+  const [projects, setProjects] = useState<ProjectSummary[]>();
+  const [error, setError] = useState<string>();
+  const [route, navigate] = useHashRoute();
+
+  useEffect(() => {
+    fetch("/api/projects")
+      .then((r) =>
+        r.ok
+          ? (r.json() as Promise<ProjectSummary[]>)
+          : Promise.reject(new Error(`HTTP ${r.status}`))
+      )
+      .then(setProjects)
+      .catch((e: Error) => setError(e.message));
+  }, []);
+
+  const projectId =
+    projects?.find((p) => p.id === route.projectId)?.id ?? projects?.[0]?.id;
+
+  useEffect(() => {
+    if (projectId && projectId !== route.projectId)
+      navigate({ projectId }, { replace: true });
+  }, [projectId, route.projectId, navigate]);
+
+  if (error) return <Centered>Couldn't load projects ({error}).</Centered>;
+  if (!projects) return <Centered>Loading…</Centered>;
+  if (!projectId)
+    return (
+      <Centered>
+        No projects found. Add data/projects/&lt;id&gt;.json to get started.
+      </Centered>
+    );
+
+  return (
+    <Workspace
+      key={projectId}
+      projects={projects}
+      projectId={projectId}
+      chatId={route.chatId}
+      navigate={navigate}
+    />
+  );
+}
+
+function Centered({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex items-center justify-center h-screen text-kumo-inactive">
+      {children}
     </div>
   );
 }
@@ -600,15 +345,7 @@ function Chat() {
 export default function App() {
   return (
     <Toasty>
-      <Suspense
-        fallback={
-          <div className="flex items-center justify-center h-screen text-kumo-inactive">
-            Loading...
-          </div>
-        }
-      >
-        <Chat />
-      </Suspense>
+      <Shell />
     </Toasty>
   );
 }

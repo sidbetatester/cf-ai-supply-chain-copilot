@@ -8,19 +8,17 @@
   "assets": {
     "directory": "./public",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/agents/*", "/oauth/*"]
+    "run_worker_first": ["/agents/*", "/api/*"]
   },
   "durable_objects": {
     "bindings": [
-      {
-        "class_name": "SupplyChainAgent",
-        "name": "SupplyChainAgent"
-      }
+      { "class_name": "ProjectAgent", "name": "ProjectAgent" },
+      { "class_name": "ChatAgent", "name": "ChatAgent" }
     ]
   },
   "migrations": [
     {
-      "new_sqlite_classes": ["SupplyChainAgent"],
+      "new_sqlite_classes": ["ProjectAgent", "ChatAgent"],
       "tag": "v1"
     }
   ]

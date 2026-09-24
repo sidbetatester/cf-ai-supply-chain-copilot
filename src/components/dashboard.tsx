@@ -4,14 +4,15 @@ import {
   type MilestoneStatus,
   type ProjectState,
   type RaidType
-} from "./shared";
+} from "../shared";
 
 type Rag = "Red" | "Amber" | "Green";
 
 const RAG_CLASS: Record<Rag, string> = {
   Red: "bg-red-500/15 text-red-600 dark:text-red-400 ring-red-500/30",
   Amber: "bg-amber-500/15 text-amber-700 dark:text-amber-400 ring-amber-500/30",
-  Green: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 ring-emerald-500/30"
+  Green:
+    "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 ring-emerald-500/30"
 };
 
 const slackRag = (slack: number): Rag =>
@@ -33,13 +34,21 @@ const RAID_ICON: Record<RaidType, string> = {
 
 function Pill({ rag, children }: { rag: Rag; children: React.ReactNode }) {
   return (
-    <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ring-1 ${RAG_CLASS[rag]}`}>
+    <span
+      className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ring-1 ${RAG_CLASS[rag]}`}
+    >
       {children}
     </span>
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  children
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
   return (
     <Surface className="rounded-xl ring ring-kumo-line p-4">
       <Text size="xs" variant="secondary" bold>
@@ -52,7 +61,9 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 export function Dashboard({ state }: { state: ProjectState | undefined }) {
   if (!state) {
-    return <div className="p-6 text-kumo-inactive text-sm">Loading project…</div>;
+    return (
+      <div className="p-6 text-kumo-inactive text-sm">Loading project…</div>
+    );
   }
 
   const risks = analyzeScheduleRisk(state);
@@ -88,14 +99,25 @@ export function Dashboard({ state }: { state: ProjectState | undefined }) {
           {state.milestones.map((m) => {
             const rag = MILESTONE_RAG[m.status];
             return (
-              <li key={m.id} className="flex items-center justify-between gap-2 text-sm">
+              <li
+                key={m.id}
+                className="flex items-center justify-between gap-2 text-sm"
+              >
                 <span className="text-kumo-default">
-                  <span className="font-mono text-xs text-kumo-subtle mr-2">{m.id}</span>
+                  <span className="font-mono text-xs text-kumo-subtle mr-2">
+                    {m.id}
+                  </span>
                   {m.name}
                 </span>
                 <span className="flex items-center gap-2 shrink-0">
-                  <span className="font-mono text-xs text-kumo-subtle">{m.due}</span>
-                  {rag === "Done" ? <Badge variant="secondary">Done</Badge> : <Pill rag={rag}>{m.status}</Pill>}
+                  <span className="font-mono text-xs text-kumo-subtle">
+                    {m.due}
+                  </span>
+                  {rag === "Done" ? (
+                    <Badge variant="secondary">Done</Badge>
+                  ) : (
+                    <Pill rag={rag}>{m.status}</Pill>
+                  )}
                 </span>
               </li>
             );
@@ -103,7 +125,9 @@ export function Dashboard({ state }: { state: ProjectState | undefined }) {
         </ul>
       </Section>
 
-      <Section title={`Purchase orders · customs buffer ${state.project.customsBufferDays}d`}>
+      <Section
+        title={`Purchase orders · customs buffer ${state.project.customsBufferDays}d`}
+      >
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-xs text-kumo-subtle">
@@ -118,7 +142,9 @@ export function Dashboard({ state }: { state: ProjectState | undefined }) {
               const slack = slackByPo.get(po.id);
               return (
                 <tr key={po.id} className="border-t border-kumo-line">
-                  <td className="py-1.5 font-mono text-xs text-kumo-subtle">{po.id}</td>
+                  <td className="py-1.5 font-mono text-xs text-kumo-subtle">
+                    {po.id}
+                  </td>
                   <td className="py-1.5 text-kumo-default">
                     {po.qty}× {po.item}
                     <div className="text-xs text-kumo-subtle">
@@ -126,12 +152,16 @@ export function Dashboard({ state }: { state: ProjectState | undefined }) {
                       {po.milestoneId && ` · gates ${po.milestoneId}`}
                     </div>
                   </td>
-                  <td className="py-1.5 font-mono text-xs text-kumo-default">{po.eta}</td>
+                  <td className="py-1.5 font-mono text-xs text-kumo-default">
+                    {po.eta}
+                  </td>
                   <td className="py-1.5 text-right">
                     {slack === undefined ? (
                       <span className="text-xs text-kumo-subtle">—</span>
                     ) : (
-                      <Pill rag={slackRag(slack)}>{slack > 0 ? `+${slack}` : slack}d</Pill>
+                      <Pill rag={slackRag(slack)}>
+                        {slack > 0 ? `+${slack}` : slack}d
+                      </Pill>
                     )}
                   </td>
                 </tr>
@@ -154,10 +184,16 @@ export function Dashboard({ state }: { state: ProjectState | undefined }) {
                 className={`text-sm ${r.status === "closed" ? "opacity-50 line-through" : ""}`}
               >
                 <span className="mr-1.5">{RAID_ICON[r.type]}</span>
-                <span className="font-mono text-xs text-kumo-subtle mr-1.5">{r.id}</span>
+                <span className="font-mono text-xs text-kumo-subtle mr-1.5">
+                  {r.id}
+                </span>
                 <span className="text-kumo-default">{r.text}</span>
                 <div className="text-xs text-kumo-subtle ml-6">
-                  {[r.owner, r.due && `due ${r.due}`, r.severity && `${r.severity} severity`]
+                  {[
+                    r.owner,
+                    r.due && `due ${r.due}`,
+                    r.severity && `${r.severity} severity`
+                  ]
                     .filter(Boolean)
                     .join(" · ")}
                 </div>
@@ -172,7 +208,12 @@ export function Dashboard({ state }: { state: ProjectState | undefined }) {
           {state.activity.slice(0, 8).map((a, i) => (
             <li key={`${a.ts}-${i}`} className="text-xs text-kumo-subtle">
               <span className="font-mono mr-2">
-                {new Date(a.ts).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                {new Date(a.ts).toLocaleString(undefined, {
+                  month: "short",
+                  day: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit"
+                })}
               </span>
               {a.text}
             </li>
