@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAgent } from "agents/react";
 import { Badge, Button, Switch, Text } from "@cloudflare/kumo";
 import { Toasty, useKumoToastManager } from "@cloudflare/kumo/components/toast";
@@ -7,17 +7,29 @@ import {
   BugIcon,
   ChartBarIcon,
   CircleIcon,
+  GearSixIcon,
   ListIcon,
   MoonIcon,
   SunIcon,
   TruckIcon
 } from "@phosphor-icons/react";
 import type { ProjectAgent } from "./agents/project-agent";
-import type { CommandInfo } from "./plugins/registry";
+import {
+  EMPTY_OVERRIDES,
+  listCommands,
+  resolveCatalog,
+  SETTINGS_NAME,
+  type Catalog,
+  type CommandInfo,
+  type Overrides,
+  type PluginInfo
+} from "./plugins/catalog";
+import type { SettingsAgent } from "./agents/settings-agent";
 import type { ProjectState, ProjectSummary } from "./shared";
 import { Chat } from "./components/chat";
 import { Dashboard } from "./components/dashboard";
 import { Sidebar } from "./components/sidebar";
+import { SettingsPanel, type SettingsConnection } from "./components/settings";
 
 // ── Routing: #/<projectId>/<chatId> ───────────────────────────────────
 
@@ -126,13 +138,17 @@ function ThemeToggle() {
 
 function Workspace({
   projects,
+  catalog,
   commands,
+  settings,
   projectId,
   chatId,
   navigate
 }: {
   projects: ProjectSummary[];
+  catalog: Catalog;
   commands: CommandInfo[];
+  settings: SettingsConnection;
   projectId: string;
   chatId: string | undefined;
   navigate: ReturnType<typeof useHashRoute>[1];
@@ -142,6 +158,7 @@ function Workspace({
   const [chatConnected, setChatConnected] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
   const [showDashboard, setShowDashboard] = useState(false); // small screens
+  const [showSettings, setShowSettings] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = usePersistentFlag(
     "sidebarCollapsed",
     window.innerWidth < 768
@@ -246,6 +263,13 @@ function Workspace({
             <Button
               variant="secondary"
               shape="square"
+              aria-label="Settings"
+              icon={<GearSixIcon size={16} />}
+              onClick={() => setShowSettings(true)}
+            />
+            <Button
+              variant="secondary"
+              shape="square"
               className="lg:hidden"
               aria-label="Toggle dashboard"
               icon={<ChartBarIcon size={16} />}
@@ -310,6 +334,14 @@ function Workspace({
           <Dashboard state={state} />
         </aside>
       </div>
+
+      {showSettings && (
+        <SettingsPanel
+          catalog={catalog}
+          settings={settings}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
     </div>
   );
 }
@@ -318,11 +350,26 @@ function Workspace({
 
 function Shell() {
   const projectsApi = useApi<ProjectSummary[]>("/api/projects");
-  const commandsApi = useApi<CommandInfo[]>("/api/commands");
+  const pluginsApi = useApi<PluginInfo[]>("/api/plugins");
   const [route, navigate] = useHashRoute();
   const projects = projectsApi.data;
-  const error = projectsApi.error ?? commandsApi.error;
-  const commands = commandsApi.data;
+  const error = projectsApi.error ?? pluginsApi.error;
+
+  // Settings overrides sync live from the SettingsAgent; the effective catalog
+  // is resolved here exactly as the server resolves it.
+  const [overrides, setOverrides] = useState<Overrides>();
+  const settings = useAgent<SettingsAgent, Overrides>({
+    agent: "SettingsAgent",
+    name: SETTINGS_NAME,
+    onStateUpdate: useCallback((s: Overrides) => setOverrides(s), [])
+  });
+  const catalog = useMemo(
+    () =>
+      pluginsApi.data &&
+      resolveCatalog(pluginsApi.data, overrides ?? EMPTY_OVERRIDES),
+    [pluginsApi.data, overrides]
+  );
+  const commands = useMemo(() => catalog && listCommands(catalog), [catalog]);
 
   const projectId =
     projects?.find((p) => p.id === route.projectId)?.id ?? projects?.[0]?.id;
@@ -333,7 +380,7 @@ function Shell() {
   }, [projectId, route.projectId, navigate]);
 
   if (error) return <Centered>Couldn't load the app ({error}).</Centered>;
-  if (!projects || !commands) return <Centered>Loading…</Centered>;
+  if (!projects || !catalog || !commands) return <Centered>Loading…</Centered>;
   if (!projectId)
     return (
       <Centered>
@@ -345,7 +392,9 @@ function Shell() {
     <Workspace
       key={projectId}
       projects={projects}
+      catalog={catalog}
       commands={commands}
+      settings={settings}
       projectId={projectId}
       chatId={route.chatId}
       navigate={navigate}

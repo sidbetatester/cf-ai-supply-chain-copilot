@@ -3,6 +3,7 @@ import { getSchedulePrompt } from "agents/schedule";
 import { simulateStreamingMiddleware, wrapLanguageModel } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
 import type { ProjectAgent } from "./agents/project-agent";
+import type { Catalog } from "./plugins/catalog";
 import { buildPluginPrompt } from "./plugins/runtime";
 
 export const MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
@@ -22,9 +23,13 @@ export function createModel(env: Env, sessionAffinity?: string) {
 }
 
 /** Plugin skills, live project context and scheduling guidance. */
-export function buildSystemPrompt(snapshot: ProjectSnapshot, now = new Date()) {
+export function buildSystemPrompt(
+  snapshot: ProjectSnapshot,
+  catalog: Catalog,
+  now = new Date()
+) {
   const { project } = snapshot;
-  return `${buildPluginPrompt()}
+  return `${buildPluginPrompt(catalog)}
 
 ## Project context
 Project: ${project.name} at ${project.site}. Go-live target: ${project.goLive}. Customs buffer: ${project.customsBufferDays} days.

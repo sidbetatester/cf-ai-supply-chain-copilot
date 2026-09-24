@@ -4,20 +4,18 @@ import {
   type AgentWorkflowEvent,
   type AgentWorkflowStep
 } from "agents/workflows";
-import { generateText, stepCountIs, type ToolSet } from "ai";
+import { generateText, stepCountIs } from "ai";
 import type { ChatAgent } from "../agents/chat-agent";
+import { getCatalog } from "../agents/settings-agent";
 import { buildSystemPrompt, createModel } from "../llm";
-import {
-  listSkills,
-  listWorkflows,
-  type WorkflowStep
-} from "../plugins/registry";
+import { activeSkills, type WorkflowStep } from "../plugins/catalog";
 import { buildToolset, fillArguments } from "../plugins/runtime";
 
 export interface PlaybookParams {
   projectId: string;
   chatId: string;
-  workflow: string;
+  /** The workflow as configured when it was started. */
+  workflow: { name: string; steps: WorkflowStep[] };
   args: string;
 }
 
@@ -42,18 +40,17 @@ const STEP_CONFIG = {
 } as const;
 
 /**
- * Runs a plugin workflow (plugins/<plugin>/workflows/<name>.yaml) as a durable
- * Cloudflare Workflow: each step is an LLM call with that step's skill and
- * tools, retried on failure, with earlier step outputs as context.
+ * Runs a plugin workflow (plugins/<plugin>/workflows/<name>.yaml, as edited in
+ * Settings) as a durable Cloudflare Workflow: each step is an LLM call with
+ * that step's skill and tools, retried on failure, with earlier step outputs
+ * as context.
  */
 export class PlaybookWorkflow extends AgentWorkflow<ChatAgent, PlaybookParams> {
   async run(
     event: AgentWorkflowEvent<PlaybookParams>,
     step: AgentWorkflowStep
   ) {
-    const { workflow: name, args } = event.payload;
-    const workflow = listWorkflows().find((w) => w.name === name);
-    if (!workflow) throw new Error(`Unknown workflow "${name}"`);
+    const { workflow, args } = event.payload;
 
     const outputs: StepOutput[] = [];
     for (const [index, definition] of workflow.steps.entries()) {
@@ -71,7 +68,10 @@ export class PlaybookWorkflow extends AgentWorkflow<ChatAgent, PlaybookParams> {
         text
       });
     }
-    await step.reportComplete({ workflow: name, steps: outputs.length });
+    await step.reportComplete({
+      workflow: workflow.name,
+      steps: outputs.length
+    });
   }
 
   private async runStep(
@@ -80,20 +80,25 @@ export class PlaybookWorkflow extends AgentWorkflow<ChatAgent, PlaybookParams> {
     args: string,
     outputs: StepOutput[]
   ): Promise<string> {
-    const project = await getAgentByName(this.env.ProjectAgent, projectId);
+    const [project, catalog] = await Promise.all([
+      getAgentByName(this.env.ProjectAgent, projectId),
+      getCatalog(this.env)
+    ]);
     const snapshot = await project.snapshot();
 
-    const allTools = buildToolset({ projectId, chatId, project });
-    const tools: ToolSet = Object.fromEntries(
-      definition.tools.map((t) => [t, allTools[t]])
+    const tools = buildToolset(
+      { projectId, chatId, project },
+      catalog,
+      definition.tools
     );
     const skill =
-      definition.skill && listSkills().find((s) => s.name === definition.skill);
+      definition.skill &&
+      activeSkills(catalog).find((s) => s.name === definition.skill);
 
     const { text } = await generateText({
       model: createModel(this.env),
       system: [
-        buildSystemPrompt(snapshot),
+        buildSystemPrompt(snapshot, catalog),
         skill && `## Skill for this step: ${skill.name}\n${skill.body}`
       ]
         .filter(Boolean)

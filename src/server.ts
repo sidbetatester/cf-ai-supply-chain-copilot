@@ -1,23 +1,30 @@
 import { getAgentByName, routeAgentRequest } from "agents";
 import { listProjects, projectExists } from "./data";
-import { listCommands, listPlugins } from "./plugins/registry";
+import { SETTINGS_NAME } from "./plugins/catalog";
+import { BUNDLED_PLUGINS } from "./plugins/registry";
 import { parseChatAgentName } from "./shared";
 
 export { ChatAgent } from "./agents/chat-agent";
 export { ProjectAgent } from "./agents/project-agent";
+export { SettingsAgent } from "./agents/settings-agent";
 export { PlaybookWorkflow } from "./workflows/playbook-workflow";
 
-/** Read-only catalog endpoints (built from bundled data/ and plugins/). */
+/**
+ * Read-only endpoints for bundled content. /api/plugins is the default
+ * catalog; the UI applies live Settings overrides from the SettingsAgent.
+ */
 const API: Record<string, () => unknown> = {
   "/api/projects": listProjects,
-  "/api/plugins": listPlugins,
-  "/api/commands": listCommands
+  "/api/plugins": () => BUNDLED_PLUGINS
 };
 
 const notFound = (what: string) =>
   new Response(`${what} not found`, { status: 404 });
 
-/** Only allow connections to projects defined in data/ and chats registered with them. */
+/**
+ * Only allow connections to projects defined in data/, chats registered with
+ * them, and the single Settings instance.
+ */
 async function authorize(
   env: Env,
   className: string,
@@ -32,6 +39,10 @@ async function authorize(
     if (!projectExists(projectId)) return notFound("Project");
     const project = await getAgentByName(env.ProjectAgent, projectId);
     if (!(await project.hasChat(chatId))) return notFound("Chat");
+    return;
+  }
+  if (className === "SettingsAgent") {
+    if (name !== SETTINGS_NAME) return notFound("Settings");
     return;
   }
   return notFound("Agent");
