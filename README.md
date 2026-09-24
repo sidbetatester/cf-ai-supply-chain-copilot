@@ -56,6 +56,24 @@ data/raid/<project>.csv          id,type,text,owner,due,severity,status
 
 Files are bundled at build time, and every row is validated against the Zod schemas in `src/shared.ts`. A malformed row fails startup with its file and row number. To add a project, add its files. **Reload data** in the UI resets a project to its source files.
 
+## Plugins
+
+Everything the agent can do comes from plugins, including the built-in `core` plugin. A plugin is a folder:
+
+```
+plugins/<plugin>/
+  plugin.json          { "name", "description", "version" }
+  skills/<name>.md     instructions for the agent
+  prompts/<name>.md    reusable prompts (become /commands)
+  tools/<name>.ts      export default defineTool({ description, inputSchema, execute })
+```
+
+- **Skills** have YAML frontmatter `description` and optional `always: true`. Always-on skills are part of every system prompt. Other skills are listed by name and description, and the agent loads one with the built-in `useSkill` tool when a task calls for it, so it always knows what exists without spending context on everything.
+- **Prompts** have frontmatter `description` and optional `argumentHint`; `$ARGUMENTS` in the body is replaced with what the user types after the command.
+- **Tools** are TypeScript files named after the tool (`tools/upsertPurchaseOrder.ts`). `execute(input, ctx)` receives Zod-validated input and a context with the project's `ProjectAgent` RPC stub. `needsApproval(input)` makes the user approve the call first.
+
+Plugins are bundled and validated at build time: bad frontmatter, a missing `plugin.json`, or a name used by two plugins fails startup naming the file. `GET /api/plugins` returns the catalog.
+
 ## Run locally
 
 Requires Node.js 20+ and a (free) Cloudflare account. Workers AI calls run against your account even in local dev.
@@ -87,7 +105,9 @@ npm run deploy
 
 - `src/server.ts`: Worker entry, `/api/projects`, agent routing and access guard
 - `src/agents/project-agent.ts`: per-project state, domain operations, reminders, chat registry
-- `src/agents/chat-agent.ts`: per-chat LLM loop, system prompt and tools
+- `src/agents/chat-agent.ts`: per-chat LLM loop and project context
+- `src/plugins/`: plugin author API (`define.ts`), loader (`registry.ts`), toolset and prompt assembly (`runtime.ts`)
+- `plugins/core/`: built-in supply chain tools, skills and prompts
 - `src/data.ts`: loads and validates `data/`
 - `src/shared.ts`: Zod schemas (data validation and tool inputs), types, schedule-risk analysis
 - `src/components/`: sidebar, chat, dashboard, tool-call rendering

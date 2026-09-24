@@ -3,14 +3,14 @@
   "version": "1.0.0",
   "private": true,
   "description": "AI program-management copilot for hardware supply chain deployments, built on Cloudflare Agents, Durable Objects and Workers AI",
-  "author": "sidbetatester (https://github.com/sidbetatester)",
-  "repository": "github:sidbetatester/cf-ai-supply-chain-copilot",
   "keywords": [
     "agents",
     "ai",
     "cloudflare"
   ],
   "license": "MIT",
+  "author": "sidbetatester (https://github.com/sidbetatester)",
+  "repository": "github:sidbetatester/cf-ai-supply-chain-copilot",
   "type": "module",
   "scripts": {
     "dev": "vite dev",
@@ -18,8 +18,8 @@
     "deploy": "vite build && wrangler deploy",
     "types": "wrangler types env.d.ts",
     "format": "oxfmt --write .",
-    "lint": "oxlint src/",
-    "check": "oxfmt --check . && oxlint src/ && tsc"
+    "lint": "oxlint src/ plugins/",
+    "check": "oxfmt --check . && oxlint src/ plugins/ && tsc"
   },
   "dependencies": {
     "@cloudflare/ai-chat": "^0.9.3",
@@ -33,6 +33,7 @@
     "react-dom": "^19.2.7",
     "streamdown": "^2.5.0",
     "workers-ai-provider": "^3.2.1",
+    "yaml": "^2.9.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {

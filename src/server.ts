@@ -1,9 +1,16 @@
 import { getAgentByName, routeAgentRequest } from "agents";
 import { listProjects, projectExists } from "./data";
+import { listPlugins } from "./plugins/registry";
 import { parseChatAgentName } from "./shared";
 
 export { ChatAgent } from "./agents/chat-agent";
 export { ProjectAgent } from "./agents/project-agent";
+
+/** Read-only catalog endpoints (built from bundled data/ and plugins/). */
+const API: Record<string, () => unknown> = {
+  "/api/projects": listProjects,
+  "/api/plugins": listPlugins
+};
 
 const notFound = (what: string) =>
   new Response(`${what} not found`, { status: 404 });
@@ -31,8 +38,8 @@ async function authorize(
 export default {
   async fetch(request: Request, env: Env) {
     const url = new URL(request.url);
-    if (url.pathname === "/api/projects" && request.method === "GET") {
-      return Response.json(listProjects());
+    if (request.method === "GET" && url.pathname in API) {
+      return Response.json(API[url.pathname]());
     }
 
     const guard = (_req: Request, lobby: { className: string; name: string }) =>

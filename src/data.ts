@@ -3,7 +3,7 @@
 // validated against the shared Zod schemas; any malformed row fails fast with
 // the offending file and row number.
 import Papa from "papaparse";
-import type { z } from "zod";
+import { validate } from "./validate";
 import {
   MilestoneSchema,
   ProjectMetaSchema,
@@ -28,21 +28,6 @@ const TABLES = {
 type TableCategory = keyof typeof TABLES;
 
 const PATH_RE = /\/data\/([^/]+)\/([^/]+)\.(csv|json)$/;
-
-function validate<S extends z.ZodType>(
-  schema: S,
-  value: unknown,
-  where: string
-): z.infer<S> {
-  const result = schema.safeParse(value);
-  if (!result.success) {
-    const issues = result.error.issues
-      .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
-      .join("; ");
-    throw new Error(`Invalid data in ${where}: ${issues}`);
-  }
-  return result.data;
-}
 
 function parseCsv(
   text: string,
