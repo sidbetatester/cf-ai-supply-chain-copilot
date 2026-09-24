@@ -2,7 +2,9 @@
   "name": "cf-ai-supply-chain-copilot",
   "version": "1.0.0",
   "private": true,
-  "description": "Starter template for building AI chat agents on Cloudflare",
+  "description": "AI program-management copilot for hardware supply chain deployments, built on Cloudflare Agents, Durable Objects and Workers AI",
+  "author": "sidbetatester (https://github.com/sidbetatester)",
+  "repository": "github:sidbetatester/cf-ai-supply-chain-copilot",
   "keywords": [
     "agents",
     "ai",
