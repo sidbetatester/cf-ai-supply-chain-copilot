@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { Badge } from "@cloudflare/kumo";
-import type { CommandInfo } from "../plugins/registry";
+import type { CommandInfo } from "../plugins/catalog";
 import { parseSlashCommand } from "../shared";
 
 /** While the input is just "/partial-name", the commands that match it. */

@@ -10,9 +10,10 @@ import {
   type UIMessage
 } from "ai";
 import { buildSystemPrompt, createModel } from "../llm";
-import { listWorkflows, type WorkflowInfo } from "../plugins/registry";
+import type { EffectiveWorkflow } from "../plugins/catalog";
 import { buildToolset, expandSlashCommands } from "../plugins/runtime";
 import { parseChatAgentName, parseSlashCommand } from "../shared";
+import { getCatalog } from "./settings-agent";
 import type {
   PlaybookParams,
   PlaybookStepEvent
@@ -48,7 +49,10 @@ export class ChatAgent extends AIChatAgent<Env> {
 
   async onChatMessage(_onFinish: unknown, options?: OnChatMessageOptions) {
     const { projectId, chatId } = parseChatAgentName(this.name);
-    const project = await getAgentByName(this.env.ProjectAgent, projectId);
+    const [project, catalog] = await Promise.all([
+      getAgentByName(this.env.ProjectAgent, projectId),
+      getCatalog(this.env)
+    ]);
 
     const userMessages = this.messages.filter((m) => m.role === "user");
     if (userMessages.length === 1) {
@@ -58,22 +62,33 @@ export class ChatAgent extends AIChatAgent<Env> {
 
     const command = parseSlashCommand(textOf(this.messages.at(-1)));
     const workflow =
-      command && listWorkflows().find((w) => w.name === command.name);
-    if (workflow)
+      command &&
+      catalog.flatMap((p) => p.workflows).find((w) => w.name === command.name);
+    if (workflow) {
+      if (!workflow.enabled)
+        return replyWith(
+          `Workflow **/${workflow.name}** is disabled in Settings.`
+        );
+      if (workflow.problems.length > 0) {
+        return replyWith(
+          `Workflow **/${workflow.name}** can't run as configured. Fix it in Settings:\n\n${workflow.problems.map((p) => `- ${p}`).join("\n")}`
+        );
+      }
       return this.startWorkflow(workflow, command.args, projectId, chatId);
+    }
 
     const snapshot = await project.snapshot();
     const result = streamText({
       model: createModel(this.env, this.sessionAffinity),
-      system: buildSystemPrompt(snapshot),
+      system: buildSystemPrompt(snapshot, catalog),
       messages: pruneMessages({
         messages: await convertToModelMessages(
-          expandSlashCommands(this.messages)
+          expandSlashCommands(this.messages, catalog)
         ),
         toolCalls: "before-last-2-messages",
         reasoning: "before-last-message"
       }),
-      tools: buildToolset({ projectId, chatId, project }),
+      tools: buildToolset({ projectId, chatId, project }, catalog),
       stopWhen: stepCountIs(MAX_STEPS),
       abortSignal: options?.abortSignal
     });
@@ -84,23 +99,22 @@ export class ChatAgent extends AIChatAgent<Env> {
   // ── Workflows ─────────────────────────────────────────────────────
 
   private async startWorkflow(
-    workflow: WorkflowInfo,
+    workflow: EffectiveWorkflow,
     args: string,
     projectId: string,
     chatId: string
   ) {
+    // The run uses the workflow as configured now, even if Settings change mid-run.
+    const { name, steps } = workflow;
     const params: PlaybookParams = {
       projectId,
       chatId,
-      workflow: workflow.name,
+      workflow: { name, steps },
       args
     };
     await this.runWorkflow(WORKFLOW_BINDING, params);
-    const steps = workflow.steps
-      .map((s, i) => `${i + 1}. ${s.name}`)
-      .join("\n");
     return replyWith(
-      `▶️ Running workflow **/${workflow.name}** (${workflow.steps.length} steps). Results will appear here as each step completes.\n\n${steps}`
+      `▶️ Running workflow **/${name}** (${steps.length} steps). Results will appear here as each step completes.\n\n${steps.map((s, i) => `${i + 1}. ${s.name}`).join("\n")}`
     );
   }
 

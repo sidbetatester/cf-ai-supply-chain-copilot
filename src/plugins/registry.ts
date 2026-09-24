@@ -1,9 +1,16 @@
-// Discovers and validates plugins/<plugin>/{plugin.json,skills,prompts,tools,workflows}.
+// Loads and validates the bundled plugins/<plugin>/{plugin.json,skills,prompts,tools,workflows}.
 // Everything is bundled at build time (Workers have no runtime filesystem);
 // invalid or conflicting plugin content fails fast, naming the file.
-import { z } from "zod";
 import { parse as parseYaml } from "yaml";
 import { parseMarkdown, validate } from "../validate";
+import {
+  PluginManifestSchema,
+  PromptMetaSchema,
+  SkillMetaSchema,
+  WorkflowSchema,
+  workflowProblems,
+  type PluginInfo
+} from "./catalog";
 import type { ToolDefinition } from "./define";
 
 const MANIFEST_FILES = import.meta.glob<unknown>(
@@ -34,94 +41,7 @@ const TOOL_FILES = import.meta.glob<{ default?: ToolDefinition }>(
   }
 );
 
-// ── Content schemas ───────────────────────────────────────────────────
-
-const PluginManifestSchema = z.object({
-  name: z.string().min(1),
-  description: z.string().min(1),
-  version: z.string().regex(/^\d+\.\d+\.\d+$/, "Expected semver, e.g. 1.0.0")
-});
-
-const SkillMetaSchema = z.object({
-  description: z.string().min(1),
-  /** Always included in the system prompt; otherwise loaded on demand via useSkill. */
-  always: z.boolean().default(false)
-});
-
-const PromptMetaSchema = z.object({
-  description: z.string().min(1),
-  /** Placeholder shown after the /command, e.g. "<meeting notes>". */
-  argumentHint: z.string().optional()
-});
-
-const WorkflowStepSchema = z.object({
-  name: z.string().min(1),
-  /** Instruction for this step; $ARGUMENTS is replaced with the command arguments. */
-  prompt: z.string().min(1),
-  /** Skill whose instructions are loaded for this step. */
-  skill: z.string().optional(),
-  /** Tools this step may call (none by default). */
-  tools: z.array(z.string()).default([])
-});
-
-const WorkflowSchema = z.object({
-  description: z.string().min(1),
-  argumentHint: z.string().optional(),
-  steps: z.array(WorkflowStepSchema).min(1).max(10)
-});
-
-// ── Catalog types (serializable; shared with the UI) ──────────────────
-
-export interface SkillInfo {
-  name: string;
-  plugin: string;
-  description: string;
-  always: boolean;
-  body: string;
-}
-
-export interface PromptInfo {
-  name: string;
-  plugin: string;
-  description: string;
-  argumentHint?: string;
-  body: string;
-}
-
-export interface ToolInfo {
-  name: string;
-  plugin: string;
-  description: string;
-}
-
-export type WorkflowStep = z.infer<typeof WorkflowStepSchema>;
-
-export interface WorkflowInfo {
-  name: string;
-  plugin: string;
-  description: string;
-  argumentHint?: string;
-  steps: WorkflowStep[];
-}
-
-/** Anything runnable as a /command: a prompt or a workflow. */
-export type CommandInfo = Pick<
-  PromptInfo,
-  "name" | "plugin" | "description" | "argumentHint"
-> & {
-  kind: "prompt" | "workflow";
-};
-
-export interface PluginInfo extends z.infer<typeof PluginManifestSchema> {
-  id: string;
-  skills: SkillInfo[];
-  prompts: PromptInfo[];
-  tools: ToolInfo[];
-  workflows: WorkflowInfo[];
-}
-
 export type RegisteredTool = ToolDefinition & { name: string; plugin: string };
-
 // ── Loading ───────────────────────────────────────────────────────────
 
 const PATH_RE =
@@ -214,7 +134,8 @@ function loadPlugins() {
     owner(plugin, file).tools.push({
       name,
       plugin,
-      description: definition.description
+      description: definition.description,
+      needsApproval: !!definition.needsApproval
     });
     tools.push({ ...definition, name, plugin });
   }
@@ -232,7 +153,7 @@ function loadPlugins() {
   }
 
   const all = [...plugins.values()].sort((a, b) => a.id.localeCompare(b.id));
-  validateWorkflowReferences(all, tools);
+  assertValidWorkflows(all);
   assertUnique(
     "skill",
     all.flatMap((p) => p.skills)
@@ -246,68 +167,29 @@ function loadPlugins() {
   return { plugins: all, tools };
 }
 
-/** Workflow steps may only use existing skills and tools that need no approval (steps run unattended). */
-function validateWorkflowReferences(
-  plugins: PluginInfo[],
-  tools: RegisteredTool[]
-) {
-  const skills = new Set(plugins.flatMap((p) => p.skills.map((s) => s.name)));
-  const toolsByName = new Map(tools.map((t) => [t.name, t]));
+/** Bundled workflows must be valid on their own (Settings can't fix a broken plugin file). */
+function assertValidWorkflows(plugins: PluginInfo[]) {
+  const skills = new Map(
+    plugins.flatMap((p) => p.skills.map((s) => [s.name, true] as const))
+  );
+  const tools = new Map(
+    plugins.flatMap((p) =>
+      p.tools.map((t) => [t.name, { ...t, enabled: true }] as const)
+    )
+  );
   for (const w of plugins.flatMap((p) => p.workflows)) {
-    const file = `plugins/${w.plugin}/workflows/${w.name}.yaml`;
-    for (const step of w.steps) {
-      if (step.skill && !skills.has(step.skill)) {
-        throw new Error(
-          `${file} step "${step.name}" uses unknown skill "${step.skill}"`
-        );
-      }
-      for (const name of step.tools) {
-        const t = toolsByName.get(name);
-        if (!t)
-          throw new Error(
-            `${file} step "${step.name}" uses unknown tool "${name}"`
-          );
-        if (t.needsApproval) {
-          throw new Error(
-            `${file} step "${step.name}" cannot use "${name}": it requires user approval`
-          );
-        }
-      }
+    const problems = workflowProblems(w.steps, skills, tools);
+    if (problems.length > 0) {
+      throw new Error(
+        `plugins/${w.plugin}/workflows/${w.name}.yaml: ${problems.join("; ")}`
+      );
     }
   }
 }
-
 const LOADED = loadPlugins();
 
-/** Full plugin catalog (metadata and markdown bodies; no executable code). */
-export const listPlugins = (): PluginInfo[] => LOADED.plugins;
+/** Plugins as bundled from plugins/ (defaults before Settings overrides). */
+export const BUNDLED_PLUGINS: PluginInfo[] = LOADED.plugins;
 
-export const listSkills = (): SkillInfo[] =>
-  LOADED.plugins.flatMap((p) => p.skills);
-
-export const listPrompts = (): PromptInfo[] =>
-  LOADED.plugins.flatMap((p) => p.prompts);
-
-export const listTools = (): RegisteredTool[] => LOADED.tools;
-
-export const listWorkflows = (): WorkflowInfo[] =>
-  LOADED.plugins.flatMap((p) => p.workflows);
-
-/** Every /command, for the chat's autocomplete. */
-export const listCommands = (): CommandInfo[] =>
-  LOADED.plugins.flatMap((p) => [
-    ...p.prompts.map(({ name, plugin, description, argumentHint }) => ({
-      name,
-      plugin,
-      description,
-      argumentHint,
-      kind: "prompt" as const
-    })),
-    ...p.workflows.map(({ name, plugin, description, argumentHint }) => ({
-      name,
-      plugin,
-      description,
-      argumentHint,
-      kind: "workflow" as const
-    }))
-  ]);
+/** Executable tool definitions, by name. */
+export const TOOL_DEFINITIONS = new Map(LOADED.tools.map((t) => [t.name, t]));

@@ -23,7 +23,7 @@ Browser (React + Kumo UI)
   ├─ Dashboard (useAgent state sync) ◄──┤ WebSocket per project
   └─ Chat (useAgentChat)             ◄──┘ WebSocket per chat
                     │
-Worker ── /api/projects · routeAgentRequest (rejects unknown projects/chats)
+Worker ── /api/projects · /api/plugins · routeAgentRequest (rejects unknown agents)
    ├─ ProjectAgent (Durable Object, one per project)
    │    ├─ State: project data loaded from data/, chat registry, activity log
    │    ├─ Domain operations: POs, milestones, RAID items (validated by Zod)
@@ -33,6 +33,7 @@ Worker ── /api/projects · routeAgentRequest (rejects unknown projects/chats
    │    ├─ LLM: Workers AI · @cf/meta/llama-3.3-70b-instruct-fp8-fast
    │    ├─ Tools → ProjectAgent over Durable Object RPC
    │    └─ /workflow commands → PlaybookWorkflow
+   ├─ SettingsAgent (Durable Object, single): plugin overrides → effective catalog
    └─ PlaybookWorkflow (Cloudflare Workflow): durable steps → events back to ChatAgent
 ```
 
@@ -89,7 +90,19 @@ plugins/<plugin>/
 
 - **Tools** are TypeScript files named after the tool (`tools/upsertPurchaseOrder.ts`). `execute(input, ctx)` receives Zod-validated input and a context with the project's `ProjectAgent` RPC stub. `needsApproval(input)` makes the user approve the call first.
 
-Plugins are bundled and validated at build time: bad frontmatter, a missing `plugin.json`, or a name used by two plugins fails startup naming the file. `GET /api/plugins` returns the catalog.
+Plugins are bundled and validated at build time: bad frontmatter, a missing `plugin.json`, or a name used by two plugins fails startup naming the file. `GET /api/plugins` returns the bundled catalog; [Settings](#settings) layers edits on top.
+
+## Settings
+
+The gear icon opens **Settings**, which customizes plugins without touching their files or redeploying:
+
+- **Enable or disable** any plugin, skill, command, workflow or tool. Disabled items disappear from the agent's prompt, toolset and `/` menu, and the server refuses disabled commands.
+- **Edit** skill instructions (and whether they're always on), command prompts, and workflow steps: add, remove and reorder steps, and pick each step's skill and tools.
+- **Reset** one item or everything to the plugin defaults.
+
+Plugin files stay the defaults. A `SettingsAgent` Durable Object stores only overrides, validated with the same Zod schemas as plugin files. One pure resolver (`resolveCatalog` in `src/plugins/catalog.ts`) applies them, on the server for every chat turn and workflow step, and in the browser for the live `/` menu and Settings UI, so both always agree. Workflows are re-checked against the effective catalog: disabling a tool a step uses marks the workflow as unable to run until it's fixed. A running workflow keeps the steps it started with.
+
+> Settings has no authentication: anyone who can open the app can change them. Put the app behind [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) (or add an auth check in `authorize()` in `src/server.ts`) before sharing a deployment beyond reviewers.
 
 ## Run locally
 
@@ -127,11 +140,12 @@ npm run deploy
 - `src/agents/chat-agent.ts`: per-chat LLM loop; starts workflows and posts their results
 - `src/workflows/playbook-workflow.ts`: Cloudflare Workflow that runs plugin workflows step by step
 - `src/llm.ts`: model setup and system prompt shared by chats and workflows
-- `src/plugins/`: plugin author API (`define.ts`), loader (`registry.ts`), toolset and prompt assembly (`runtime.ts`)
+- `src/plugins/`: plugin author API (`define.ts`), bundled loader (`registry.ts`), schemas and effective-catalog resolver (`catalog.ts`), toolset and prompt assembly (`runtime.ts`)
+- `src/agents/settings-agent.ts`: stores and validates Settings overrides
 - `plugins/core/`: built-in supply chain tools, skills and prompts
 - `src/data.ts`: loads and validates `data/`
 - `src/shared.ts`: Zod schemas (data validation and tool inputs), types, schedule-risk analysis
-- `src/components/`: sidebar, chat, dashboard, tool-call rendering
+- `src/components/`: sidebar, chat, command menu, dashboard, Settings, tool-call rendering
 
 Built from the [cloudflare/agents-starter](https://github.com/cloudflare/agents-starter) template. See [PROMPTS.md](./PROMPTS.md) for the AI prompts used during development.
 

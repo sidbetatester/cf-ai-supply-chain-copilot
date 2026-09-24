@@ -14,7 +14,7 @@ import {
   TruckIcon
 } from "@phosphor-icons/react";
 import type { ChatAgent } from "../agents/chat-agent";
-import type { CommandInfo } from "../plugins/registry";
+import type { CommandInfo } from "../plugins/catalog";
 import { chatAgentName, parseSlashCommand } from "../shared";
 import {
   activeCommand,
