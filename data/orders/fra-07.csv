@@ -1,0 +1,4 @@
+id,supplier,item,qty,eta,status,milestoneId
+PO-2001,Northwind Compute,Gen13 compute servers,120,2026-10-28,open,M2
+PO-2002,Litware Storage,NVMe storage nodes,24,2026-11-03,open,M2
+PO-2003,Fabrikam Optics,400G optics,96,2026-10-15,shipped,M2

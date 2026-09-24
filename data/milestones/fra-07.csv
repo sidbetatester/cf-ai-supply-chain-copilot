@@ -1,0 +1,4 @@
+id,name,due,status
+M1,Decommission plan approved,2026-10-05,done
+M2,Replacement hardware on site,2026-11-06,on-track
+M3,Migration & cutover,2026-11-30,on-track

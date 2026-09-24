@@ -1,0 +1,3 @@
+id,type,text,owner,due,severity,status
+R-1,Risk,Customs clearance at Lagos port can exceed the 7-day buffer during Q4 peak,Logistics,,high,open
+A-1,Action,Confirm export paperwork for core switches with Contoso,Priya (Procurement),2026-10-02,,open

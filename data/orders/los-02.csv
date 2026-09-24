@@ -1,0 +1,5 @@
+id,supplier,item,qty,eta,status,milestoneId
+PO-1001,Tailspin Power,Rack PDUs,16,2026-10-20,shipped,M1
+PO-1002,Northwind Compute,Gen12 compute servers,40,2026-11-10,open,M2
+PO-1003,Fabrikam Optics,100G optics,200,2026-11-02,shipped,M2
+PO-1004,Contoso Networks,Core switches,2,2026-11-18,open,M2

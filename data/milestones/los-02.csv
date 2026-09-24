@@ -1,0 +1,5 @@
+id,name,due,status
+M1,Site readiness (power & space),2026-10-30,on-track
+M2,All hardware on site,2026-11-20,on-track
+M3,Rack & stack complete,2026-12-01,on-track
+M4,Network turn-up & go-live,2026-12-15,on-track

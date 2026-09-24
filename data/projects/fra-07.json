@@ -1,0 +1,6 @@
+{
+  "name": "FRA-07 Capacity Refresh",
+  "site": "Frankfurt, Germany",
+  "goLive": "2026-11-30",
+  "customsBufferDays": 2
+}
