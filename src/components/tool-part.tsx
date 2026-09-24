@@ -1,5 +1,6 @@
 import { getToolName, isToolUIPart, type UIMessage } from "ai";
 import { Badge, Button, Surface, Text } from "@cloudflare/kumo";
+import { Tip } from "./tip";
 import {
   CaretDownIcon,
   CheckCircleIcon,
@@ -42,7 +43,10 @@ export function ToolPartView({
       <div className="flex justify-start">
         <Surface className="max-w-[85%] px-3 py-1.5 rounded-xl ring ring-kumo-line">
           <details>
-            <summary className="flex items-center gap-2 cursor-pointer select-none list-none">
+            <summary
+              className="flex items-center gap-2 cursor-pointer select-none list-none"
+              title="Show what the agent sent to this tool and what it returned"
+            >
               <GearIcon size={14} className="text-kumo-inactive" />
               <Text size="xs" variant="secondary" bold>
                 {toolName}
@@ -76,30 +80,37 @@ export function ToolPartView({
             </Text>
           </div>
           <div className="flex gap-2">
-            <Button
-              variant="primary"
-              size="sm"
-              icon={<CheckCircleIcon size={14} />}
-              onClick={() => {
-                if (approvalId) {
-                  addToolApprovalResponse({ id: approvalId, approved: true });
-                }
-              }}
-            >
-              Approve
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              icon={<XCircleIcon size={14} />}
-              onClick={() => {
-                if (approvalId) {
-                  addToolApprovalResponse({ id: approvalId, approved: false });
-                }
-              }}
-            >
-              Reject
-            </Button>
+            <Tip content="Let the agent make this change">
+              <Button
+                variant="primary"
+                size="sm"
+                icon={<CheckCircleIcon size={14} />}
+                onClick={() => {
+                  if (approvalId) {
+                    addToolApprovalResponse({ id: approvalId, approved: true });
+                  }
+                }}
+              >
+                Approve
+              </Button>
+            </Tip>
+            <Tip content="Decline: nothing changes and the agent is told you said no">
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={<XCircleIcon size={14} />}
+                onClick={() => {
+                  if (approvalId) {
+                    addToolApprovalResponse({
+                      id: approvalId,
+                      approved: false
+                    });
+                  }
+                }}
+              >
+                Reject
+              </Button>
+            </Tip>
           </div>
         </Surface>
       </div>

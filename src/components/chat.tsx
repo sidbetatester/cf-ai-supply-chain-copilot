@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
 import { isToolUIPart, type UIMessage } from "ai";
-import { Button, Empty, InputArea } from "@cloudflare/kumo";
+import { Badge, Button, Empty, InputArea } from "@cloudflare/kumo";
 import { Streamdown } from "streamdown";
 import { code } from "@streamdown/code";
 import {
@@ -22,7 +22,12 @@ import {
   commandText,
   useCommandMenu
 } from "./command-menu";
+import { Tip } from "./tip";
 import { ToolPartView } from "./tool-part";
+
+/** Allow only https and mailto links (and in-page anchors) in rendered markdown. */
+const safeUrl = (url: string) =>
+  /^(https:|mailto:|#)/i.test(url.trim()) ? url : null;
 
 // ── Voice input (browser Web Speech API, no backend needed) ──────────
 
@@ -153,33 +158,47 @@ export function Chat({
 
   return (
     <main className="flex-1 flex flex-col min-w-0">
-      <div className="flex-1 overflow-y-auto">
-        <div className="max-w-3xl mx-auto px-5 py-6 space-y-5">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden">
+        <div className="max-w-3xl mx-auto px-4 sm:px-5 py-6 space-y-5 min-w-0">
           {messages.length === 0 && (
             <Empty
               icon={<TruckIcon size={32} />}
               title="Your program copilot"
               description="Ask anything about the project, paste meeting notes, or type / for commands. Changes appear live on the dashboard."
               contents={
-                <div className="flex flex-col items-stretch gap-2 max-w-xl">
+                <ul className="w-full max-w-xl mx-auto space-y-2 text-left">
                   {commands.map((command) => (
-                    <Button
-                      key={command.name}
-                      variant="outline"
-                      size="sm"
-                      className="h-auto! py-2 text-left whitespace-normal justify-start gap-2"
-                      disabled={isStreaming || !connected}
-                      onClick={() =>
-                        pickCommand(command, !command.argumentHint)
-                      }
-                    >
-                      <span className="font-mono">/{command.name}</span>
-                      <span className="text-kumo-subtle">
-                        {command.description}
-                      </span>
-                    </Button>
+                    <li key={command.name}>
+                      <Tip
+                        content={
+                          command.argumentHint
+                            ? `Insert /${command.name} so you can add ${command.argumentHint}`
+                            : `Run /${command.name} now`
+                        }
+                        block
+                      >
+                        <button
+                          type="button"
+                          disabled={isStreaming || !connected}
+                          onClick={() =>
+                            pickCommand(command, !command.argumentHint)
+                          }
+                          className="w-full min-w-0 rounded-xl border border-kumo-line bg-kumo-base px-3 py-2 text-left text-sm hover:bg-kumo-control disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <span className="flex items-center gap-2 font-mono text-kumo-default">
+                            /{command.name}
+                            {command.kind === "workflow" && (
+                              <Badge variant="secondary">workflow</Badge>
+                            )}
+                          </span>
+                          <span className="block text-kumo-subtle break-words">
+                            {command.description}
+                          </span>
+                        </button>
+                      </Tip>
+                    </li>
                   ))}
-                </div>
+                </ul>
               }
             />
           )}
@@ -204,7 +223,7 @@ export function Chat({
             e.preventDefault();
             send();
           }}
-          className="relative max-w-3xl mx-auto px-5 py-4"
+          className="relative max-w-3xl mx-auto px-4 sm:px-5 py-3 sm:py-4"
         >
           <CommandMenu menu={menu} onSelect={(c) => pickCommand(c, false)} />
           {hint && (
@@ -218,23 +237,31 @@ export function Chat({
           )}
           <div className="flex items-end gap-3 rounded-xl border border-kumo-line bg-kumo-base p-3 shadow-sm focus-within:ring-2 focus-within:ring-kumo-ring focus-within:border-transparent transition-shadow">
             {voice.supported && (
-              <Button
-                type="button"
-                variant={voice.listening ? "primary" : "ghost"}
-                shape="square"
-                aria-label={
-                  voice.listening ? "Stop voice input" : "Start voice input"
+              <Tip
+                content={
+                  voice.listening
+                    ? "Stop dictating"
+                    : "Dictate your message (speech to text)"
                 }
-                icon={
-                  <MicrophoneIcon
-                    size={18}
-                    className={voice.listening ? "animate-pulse" : ""}
-                  />
-                }
-                onClick={voice.toggle}
-                disabled={!connected || isStreaming}
-                className="mb-0.5"
-              />
+              >
+                <Button
+                  type="button"
+                  variant={voice.listening ? "primary" : "ghost"}
+                  shape="square"
+                  aria-label={
+                    voice.listening ? "Stop voice input" : "Start voice input"
+                  }
+                  icon={
+                    <MicrophoneIcon
+                      size={18}
+                      className={voice.listening ? "animate-pulse" : ""}
+                    />
+                  }
+                  onClick={voice.toggle}
+                  disabled={!connected || isStreaming}
+                  className="mb-0.5"
+                />
+              </Tip>
             )}
             <InputArea
               ref={textareaRef}
@@ -248,39 +275,50 @@ export function Chat({
                 }
               }}
               onInput={(e) => {
+                // Grow with the text up to max-h-40, then scroll.
                 const el = e.currentTarget;
                 el.style.height = "auto";
                 el.style.height = `${el.scrollHeight}px`;
+                el.style.overflowY =
+                  el.scrollHeight > el.clientHeight ? "auto" : "hidden";
               }}
               placeholder={
-                voice.listening
-                  ? "Listening…"
-                  : "Ask about the project, paste notes, or type / for commands…"
+                voice.listening ? "Listening…" : "Message or /command"
               }
               disabled={!connected || isStreaming}
               rows={1}
-              className="flex-1 ring-0! focus:ring-0! shadow-none! bg-transparent! outline-none! resize-none max-h-40"
+              className="flex-1 min-w-0 ring-0! focus:ring-0! shadow-none! bg-transparent! outline-none! resize-none max-h-40 overflow-y-hidden"
             />
             {isStreaming ? (
-              <Button
-                type="button"
-                variant="secondary"
-                shape="square"
-                aria-label="Stop generation"
-                icon={<StopIcon size={18} />}
-                onClick={stop}
-                className="mb-0.5"
-              />
+              <Tip content="Stop the response">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  shape="square"
+                  aria-label="Stop generation"
+                  icon={<StopIcon size={18} />}
+                  onClick={stop}
+                  className="mb-0.5"
+                />
+              </Tip>
             ) : (
-              <Button
-                type="submit"
-                variant="primary"
-                shape="square"
-                aria-label="Send message"
-                disabled={!input.trim() || !connected}
-                icon={<PaperPlaneRightIcon size={18} />}
-                className="mb-0.5"
-              />
+              <Tip
+                content={
+                  connected
+                    ? "Send (Enter). Shift+Enter adds a new line"
+                    : "Connecting to the chat…"
+                }
+              >
+                <Button
+                  type="submit"
+                  variant="primary"
+                  shape="square"
+                  aria-label="Send message"
+                  disabled={!input.trim() || !connected}
+                  icon={<PaperPlaneRightIcon size={18} />}
+                  className="mb-0.5"
+                />
+              </Tip>
             )}
           </div>
         </form>
@@ -326,7 +364,10 @@ function MessageView({
           return (
             <div key={key} className="flex justify-start">
               <details className="max-w-[85%] w-full">
-                <summary className="flex items-center gap-2 cursor-pointer px-3 py-2 rounded-lg bg-purple-500/10 border border-purple-500/20 text-sm select-none">
+                <summary
+                  title="Show the model's reasoning"
+                  className="flex items-center gap-2 cursor-pointer px-3 py-2 rounded-lg bg-purple-500/10 border border-purple-500/20 text-sm select-none"
+                >
                   <BrainIcon size={14} className="text-purple-400" />
                   <span className="font-medium text-kumo-default">
                     Reasoning
@@ -346,17 +387,22 @@ function MessageView({
         if (part.type === "text" && part.text) {
           return isUser ? (
             <div key={key} className="flex justify-end">
-              <div className="max-w-[85%] px-4 py-2.5 rounded-2xl rounded-br-md bg-kumo-contrast text-kumo-inverse leading-relaxed whitespace-pre-wrap">
+              <div className="max-w-[85%] min-w-0 px-4 py-2.5 rounded-2xl rounded-br-md bg-kumo-contrast text-kumo-inverse leading-relaxed whitespace-pre-wrap break-words">
                 <UserText text={part.text} />
               </div>
             </div>
           ) : (
             <div key={key} className="flex justify-start">
-              <div className="max-w-[85%] rounded-2xl rounded-bl-md bg-kumo-base text-kumo-default leading-relaxed">
+              <div className="max-w-[85%] min-w-0 overflow-x-auto rounded-2xl rounded-bl-md bg-kumo-base text-kumo-default leading-relaxed">
                 <Streamdown
                   className="sd-theme rounded-2xl rounded-bl-md p-3"
                   plugins={{ code }}
                   controls={false}
+                  // LLM output is untrusted: no raw HTML, no remote images
+                  // (tracking beacons), and only https/mailto links.
+                  skipHtml
+                  disallowedElements={["img"]}
+                  urlTransform={safeUrl}
                   isAnimating={isAnimating}
                 >
                   {part.text}

@@ -11,14 +11,30 @@ import {
   type MilestoneUpdate,
   type NewRaidItem,
   type ProjectState,
-  type PurchaseOrderPatch
+  type PurchaseOrderPatch,
+  sha256Hex
 } from "../shared";
 
+import { denySubAgents, isAdminKey, rejectClientStateChange } from "./guards";
 /** Tool results are returned to the LLM: success with details, or an error it can act on. */
 type ToolResult = { ok: true; [detail: string]: unknown } | { error: string };
 type ScheduleInput = z.infer<typeof scheduleSchema>;
 
 const MAX_ACTIVITY = 50;
+const MAX_CHATS = 50;
+const MAX_RAID_ITEMS = 500;
+const MAX_TITLE = 80;
+
+/** Hash of a browser's random owner token (tokens themselves are never stored). */
+async function ownerHash(ownerToken: unknown) {
+  if (
+    typeof ownerToken !== "string" ||
+    ownerToken.length < 16 ||
+    ownerToken.length > 200
+  )
+    throw new Error("Invalid owner token");
+  return sha256Hex(ownerToken);
+}
 
 /**
  * One instance per project (named by project id). Owns the project's data,
@@ -26,6 +42,15 @@ const MAX_ACTIVITY = 50;
  * connected dashboards; ChatAgents call the domain methods over DO RPC.
  */
 export class ProjectAgent extends Agent<Env, ProjectState> {
+  // ── Security: state changes are server-only; no sub-agent routes ───
+
+  validateStateChange(_next: unknown, source: unknown) {
+    rejectClientStateChange(source);
+  }
+
+  onBeforeSubAgent() {
+    return denySubAgents();
+  }
   onStart() {
     // First run for this instance: load the project named after it from data/.
     if (!this.state?.project)
@@ -95,6 +120,10 @@ export class ProjectAgent extends Agent<Env, ProjectState> {
   }
 
   addRaidItems(items: NewRaidItem[]): ToolResult {
+    if (this.state.raid.length + items.length > MAX_RAID_ITEMS)
+      return {
+        error: `The RAID log is limited to ${MAX_RAID_ITEMS} items; close or consolidate items first`
+      };
     const added: string[] = [];
     this.mutate(`Added ${items.length} RAID item(s)`, (s) => {
       for (const item of items) {
@@ -158,43 +187,35 @@ export class ProjectAgent extends Agent<Env, ProjectState> {
   }
 
   // ── Chat registry (called from the UI) ────────────────────────────
+  // Chats are shared with everyone viewing the project. The browser that
+  // creates a chat gets to rename and delete it: it sends a random owner
+  // token, and only the token's hash is stored (state is broadcast).
 
   @callable()
-  createChat(): ChatMeta {
-    const chat = {
+  async createChat(ownerToken: string): Promise<ChatMeta> {
+    if (this.state.chats.length >= MAX_CHATS)
+      throw new Error(
+        `This project has the maximum of ${MAX_CHATS} chats; delete one first.`
+      );
+    const chat: ChatMeta = {
       id: crypto.randomUUID().slice(0, 8),
       title: DEFAULT_CHAT_TITLE,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      ownerHash: await ownerHash(ownerToken)
     };
     this.setState({ ...this.state, chats: [chat, ...this.state.chats] });
     return chat;
   }
 
   @callable()
-  renameChat(id: string, title: string) {
-    const trimmed = title.trim().slice(0, 80);
-    if (!trimmed) return;
-    this.setState({
-      ...this.state,
-      chats: this.state.chats.map((c) =>
-        c.id === id ? { ...c, title: trimmed } : c
-      )
-    });
-  }
-
-  /** Called by a ChatAgent on its first message to give the chat a title. */
-  titleChatIfUntitled(id: string, firstMessage: string) {
-    const chat = this.state.chats.find((c) => c.id === id);
-    if (chat?.title === DEFAULT_CHAT_TITLE)
-      this.renameChat(id, firstMessage.replace(/\s+/g, " ").slice(0, 60));
-  }
-
-  hasChat(id: string) {
-    return this.state.chats.some((c) => c.id === id);
+  async renameChat(id: string, title: string, ownerToken: string) {
+    await this.requireChatOwner(id, ownerToken);
+    this.setTitle(id, title);
   }
 
   @callable()
-  async deleteChat(id: string) {
+  async deleteChat(id: string, ownerToken: string) {
+    await this.requireChatOwner(id, ownerToken);
     this.setState({
       ...this.state,
       chats: this.state.chats.filter((c) => c.id !== id)
@@ -206,10 +227,44 @@ export class ProjectAgent extends Agent<Env, ProjectState> {
     await chat.destroy();
   }
 
-  /** Reload project data from data/ files; chats are kept. */
+  /** Called by a ChatAgent on its first message to give the chat a title. */
+  titleChatIfUntitled(id: string, firstMessage: string) {
+    const chat = this.state.chats.find((c) => c.id === id);
+    if (chat?.title === DEFAULT_CHAT_TITLE)
+      this.setTitle(id, firstMessage.replace(/\s+/g, " ").slice(0, 60));
+  }
+
+  hasChat(id: string) {
+    return this.state.chats.some((c) => c.id === id);
+  }
+
+  /** Reload project data from data/ files (admin only; chats are kept). */
   @callable()
-  async resetProject() {
+  async resetProject(adminKey: string) {
+    if (!(await isAdminKey(this.env, adminKey)))
+      throw new Error("Reloading project data requires the admin key.");
     for (const s of this.getSchedules()) await this.cancelSchedule(s.id);
     this.setState({ ...loadProjectData(this.name), chats: this.state.chats });
+  }
+
+  private setTitle(id: string, title: string) {
+    const trimmed = title.trim().slice(0, MAX_TITLE);
+    if (!trimmed) return;
+    this.setState({
+      ...this.state,
+      chats: this.state.chats.map((c) =>
+        c.id === id ? { ...c, title: trimmed } : c
+      )
+    });
+  }
+
+  /** Throws unless the chat exists and `ownerToken` created it (chats from before ownership are open). */
+  private async requireChatOwner(id: string, ownerToken: string) {
+    const chat = this.state.chats.find((c) => c.id === id);
+    if (!chat) throw new Error("That chat no longer exists.");
+    if (chat.ownerHash && chat.ownerHash !== (await ownerHash(ownerToken)))
+      throw new Error(
+        "Only the browser that created this chat can rename or delete it."
+      );
   }
 }

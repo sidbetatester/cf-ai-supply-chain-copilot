@@ -48,10 +48,13 @@ const errorMessage = (e: unknown) =>
 export function SettingsPanel({
   catalog,
   settings,
+  onUnlocked,
   onClose
 }: {
   catalog: Catalog;
   settings: SettingsConnection;
+  /** Called with the admin key after a successful unlock (enables admin-only actions). */
+  onUnlocked: (key: string) => void;
   onClose: () => void;
 }) {
   const [selection, setSelection] = useState<Selection>(() => ({
@@ -124,7 +127,10 @@ export function SettingsPanel({
           <UnlockBar
             configured={access.configured}
             onUnlock={(key) =>
-              run(async () => setAccess(await settings.stub.unlock(key)))
+              run(async () => {
+                setAccess(await settings.stub.unlock(key));
+                onUnlocked(key);
+              })
             }
           />
         )}

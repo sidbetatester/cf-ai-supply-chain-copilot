@@ -35,7 +35,7 @@ const RAID_ICON: Record<RaidType, string> = {
 function Pill({ rag, children }: { rag: Rag; children: React.ReactNode }) {
   return (
     <span
-      className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ring-1 ${RAG_CLASS[rag]}`}
+      className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ring-1 whitespace-nowrap ${RAG_CLASS[rag]}`}
     >
       {children}
     </span>
@@ -103,7 +103,7 @@ export function Dashboard({ state }: { state: ProjectState | undefined }) {
                 key={m.id}
                 className="flex items-center justify-between gap-2 text-sm"
               >
-                <span className="text-kumo-default">
+                <span className="min-w-0 text-kumo-default">
                   <span className="font-mono text-xs text-kumo-subtle mr-2">
                     {m.id}
                   </span>
@@ -128,7 +128,7 @@ export function Dashboard({ state }: { state: ProjectState | undefined }) {
       <Section
         title={`Purchase orders · customs buffer ${state.project.customsBufferDays}d`}
       >
-        <table className="w-full text-sm">
+        <table className="w-full text-sm table-auto">
           <thead>
             <tr className="text-left text-xs text-kumo-subtle">
               <th className="font-medium pb-1">PO</th>
@@ -142,20 +142,20 @@ export function Dashboard({ state }: { state: ProjectState | undefined }) {
               const slack = slackByPo.get(po.id);
               return (
                 <tr key={po.id} className="border-t border-kumo-line">
-                  <td className="py-1.5 font-mono text-xs text-kumo-subtle">
+                  <td className="py-1.5 pr-2 font-mono text-xs text-kumo-subtle whitespace-nowrap align-top">
                     {po.id}
                   </td>
-                  <td className="py-1.5 text-kumo-default">
+                  <td className="py-1.5 pr-2 text-kumo-default align-top break-words">
                     {po.qty}× {po.item}
                     <div className="text-xs text-kumo-subtle">
                       {po.supplier} · {po.status}
                       {po.milestoneId && ` · gates ${po.milestoneId}`}
                     </div>
                   </td>
-                  <td className="py-1.5 font-mono text-xs text-kumo-default">
+                  <td className="py-1.5 pr-2 font-mono text-xs text-kumo-default whitespace-nowrap align-top">
                     {po.eta}
                   </td>
-                  <td className="py-1.5 text-right">
+                  <td className="py-1.5 text-right whitespace-nowrap align-top">
                     {slack === undefined ? (
                       <span className="text-xs text-kumo-subtle">—</span>
                     ) : (

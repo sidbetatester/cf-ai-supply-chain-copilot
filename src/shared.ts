@@ -3,6 +3,11 @@
 // type the app, and define the LLM tool inputs.
 import { z } from "zod";
 
+/** Bounded text: keeps stored state and LLM prompts small whatever the input. */
+const text = (max: number) => z.string().trim().min(1).max(max);
+const SHORT = 120;
+const LONG = 600;
+
 export const isoDate = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD")
@@ -24,17 +29,17 @@ export const RaidTypeSchema = z.enum(["Risk", "Action", "Issue", "Decision"]);
 export const SeveritySchema = z.enum(["low", "medium", "high"]);
 
 export const ProjectMetaSchema = z.object({
-  name: z.string().min(1),
-  site: z.string().min(1),
+  name: text(SHORT),
+  site: text(SHORT),
   goLive: isoDate,
   customsBufferDays: z.number().int().min(0)
 });
 
 export const PurchaseOrderSchema = z.object({
-  id: z.string().min(1).describe("PO id, e.g. PO-1005"),
-  supplier: z.string().min(1),
-  item: z.string().min(1),
-  qty: z.coerce.number().int().positive(),
+  id: text(40).describe("PO id, e.g. PO-1005"),
+  supplier: text(SHORT),
+  item: text(SHORT),
+  qty: z.coerce.number().int().positive().max(1_000_000),
   eta: isoDate.describe("Arrival at destination port, YYYY-MM-DD"),
   status: POStatusSchema,
   milestoneId: z
@@ -44,17 +49,17 @@ export const PurchaseOrderSchema = z.object({
 });
 
 export const MilestoneSchema = z.object({
-  id: z.string().min(1).describe("Milestone id, e.g. M2"),
-  name: z.string().min(1),
+  id: text(40).describe("Milestone id, e.g. M2"),
+  name: text(SHORT),
   due: isoDate,
   status: MilestoneStatusSchema
 });
 
 export const RaidItemSchema = z.object({
-  id: z.string().min(1),
+  id: text(40),
   type: RaidTypeSchema,
-  text: z.string().min(1),
-  owner: z.string().optional(),
+  text: text(LONG),
+  owner: text(SHORT).optional(),
   due: isoDate.optional(),
   severity: SeveritySchema.optional(),
   status: z.enum(["open", "closed"])
@@ -70,7 +75,7 @@ export const MilestoneUpdateSchema = MilestoneSchema.pick({
   status: true
 })
   .partial({ due: true, status: true })
-  .extend({ reason: z.string().describe("Why this change is being made") });
+  .extend({ reason: text(LONG).describe("Why this change is being made") });
 export const NewRaidItemSchema = RaidItemSchema.omit({
   id: true,
   status: true
@@ -96,6 +101,8 @@ export interface ChatMeta {
   id: string;
   title: string;
   createdAt: string;
+  /** SHA-256 of the creating browser's owner token (see ProjectAgent.createChat). */
+  ownerHash?: string;
 }
 
 export interface ProjectSummary {
@@ -122,6 +129,16 @@ export function parseSlashCommand(
   const match = /^\/([a-z0-9][a-z0-9-]*)(?:\s+([\s\S]*))?$/.exec(text.trim());
   return match ? { name: match[1], args: (match[2] ?? "").trim() } : null;
 }
+
+/** Hex SHA-256 via Web Crypto (works in Workers and browsers). */
+export const sha256Hex = async (text: string) =>
+  [
+    ...new Uint8Array(
+      await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))
+    )
+  ]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 
 /** ChatAgent instances are named "<projectId>--<chatId>". */
 const CHAT_NAME_SEP = "--";

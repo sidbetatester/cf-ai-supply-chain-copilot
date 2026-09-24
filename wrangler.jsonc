@@ -17,6 +17,14 @@
       { "class_name": "SettingsAgent", "name": "SettingsAgent" }
     ]
   },
+  // Bounds Workers AI spend and admin-key guessing (see src/agents/guards.ts).
+  "ratelimits": [
+    {
+      "name": "RATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 20, "period": 60 }
+    }
+  ],
   "workflows": [
     {
       "name": "cf-ai-supply-chain-copilot-playbook",
