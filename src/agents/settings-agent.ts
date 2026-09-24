@@ -122,7 +122,9 @@ export class SettingsAgent extends Agent<Env, Overrides> {
     // Throttle guessing: per connection, and across all connections.
     if ((state.unlockFailures ?? 0) >= MAX_UNLOCK_FAILURES)
       throw new Error("Too many attempts. Reload the page to try again.");
-    if (!(await withinRateLimit(this.env, "settings-unlock")))
+    if (
+      !(await withinRateLimit(this.env.UNLOCK_RATE_LIMITER, "settings-unlock"))
+    )
       throw new Error("Too many attempts. Wait a minute and try again.");
 
     if (!(await isAdminKey(this.env, key))) {
