@@ -11,22 +11,27 @@ export const PluginManifestSchema = z.object({
   version: z.string().regex(/^\d+\.\d+\.\d+$/, "Expected semver, e.g. 1.0.0")
 });
 
+/** Limits for plugin text (files and Settings), bounding every system prompt. */
+const DESCRIPTION = z.string().trim().min(1).max(300);
+const HINT = z.string().max(100);
+export const MAX_BODY = 8000;
+
 export const SkillMetaSchema = z.object({
-  description: z.string().min(1),
+  description: DESCRIPTION,
   /** Always included in the system prompt; otherwise loaded on demand via useSkill. */
   always: z.boolean().default(false)
 });
 
 export const PromptMetaSchema = z.object({
-  description: z.string().min(1),
+  description: DESCRIPTION,
   /** Placeholder shown after the /command, e.g. "<meeting notes>". */
-  argumentHint: z.string().optional()
+  argumentHint: HINT.optional()
 });
 
 export const WorkflowStepSchema = z.object({
-  name: z.string().min(1),
+  name: z.string().trim().min(1).max(80),
   /** Instruction for this step; $ARGUMENTS is replaced with the command arguments. */
-  prompt: z.string().min(1),
+  prompt: z.string().trim().min(1).max(4000),
   /** Skill whose instructions are loaded for this step. */
   skill: z.string().optional(),
   /** Tools this step may call (none by default). */
@@ -34,12 +39,12 @@ export const WorkflowStepSchema = z.object({
 });
 
 export const WorkflowSchema = z.object({
-  description: z.string().min(1),
-  argumentHint: z.string().optional(),
+  description: DESCRIPTION,
+  argumentHint: HINT.optional(),
   steps: z.array(WorkflowStepSchema).min(1).max(10)
 });
 
-const body = z.string().trim().min(1);
+const body = z.string().trim().min(1).max(MAX_BODY);
 
 /** User edits layered over bundled plugins. Absent fields keep the bundled value. */
 export const OverridesSchema = z.object({

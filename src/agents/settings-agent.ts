@@ -1,4 +1,3 @@
-import { timingSafeEqual } from "node:crypto";
 import { Agent, callable, getAgentByName, getCurrentAgent } from "agents";
 import {
   EMPTY_OVERRIDES,
@@ -12,8 +11,13 @@ import {
   type Overrides
 } from "../plugins/catalog";
 import { BUNDLED_PLUGINS } from "../plugins/registry";
+import {
+  denySubAgents,
+  isAdminKey,
+  rejectClientStateChange,
+  withinRateLimit
+} from "./guards";
 
-import { denySubAgents, rejectClientStateChange } from "./guards";
 /** The effective plugin catalog (bundled plugins + Settings), read over RPC. */
 export async function getCatalog(env: Env): Promise<Catalog> {
   const settings = await getAgentByName(env.SettingsAgent, SETTINGS_NAME);
@@ -36,22 +40,16 @@ function parseOverrides(value: unknown): Overrides {
   return result.data;
 }
 
-/** Per-connection flag set by a successful unlock(); survives hibernation. */
+/** Per-connection flags (survive hibernation). */
 interface EditorConnectionState {
+  /** Set by a successful unlock(). */
   settingsEditor?: boolean;
+  /** Failed unlock attempts on this connection. */
+  unlockFailures?: number;
 }
 
-const sha256 = async (text: string) =>
-  new Uint8Array(
-    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))
-  );
-
-/** Constant-time comparison (hashing first gives equal-length inputs). */
-async function keysMatch(given: string, expected: string) {
-  const [a, b] = await Promise.all([sha256(given), sha256(expected)]);
-  return timingSafeEqual(a, b);
-}
-
+/** Wrong keys allowed per connection before it must reconnect. */
+const MAX_UNLOCK_FAILURES = 5;
 const OVERRIDE_FIELD = {
   skill: "skills",
   prompt: "prompts",
@@ -99,18 +97,29 @@ export class SettingsAgent extends Agent<Env, Overrides> {
   /** Allow the calling connection to edit Settings if the admin key matches. */
   @callable()
   async unlock(key: string): Promise<SettingsAccess> {
-    const expected = this.env.SETTINGS_ADMIN_KEY;
-    if (!expected)
+    if (!this.env.SETTINGS_ADMIN_KEY)
       throw new Error(
         "Editing is disabled: no admin key is configured for this deployment."
       );
-    if (typeof key !== "string" || !(await keysMatch(key, expected))) {
+    const { connection } = getCurrentAgent();
+    const state = (connection?.state ?? {}) as EditorConnectionState;
+    // Throttle guessing: per connection, and across all connections.
+    if ((state.unlockFailures ?? 0) >= MAX_UNLOCK_FAILURES)
+      throw new Error("Too many attempts. Reload the page to try again.");
+    if (!(await withinRateLimit(this.env, "settings-unlock")))
+      throw new Error("Too many attempts. Wait a minute and try again.");
+
+    if (!(await isAdminKey(this.env, key))) {
+      connection?.setState((prev: EditorConnectionState | null) => ({
+        ...prev,
+        unlockFailures: (prev?.unlockFailures ?? 0) + 1
+      }));
       throw new Error("That admin key isn't correct.");
     }
-    const { connection } = getCurrentAgent();
     connection?.setState((prev: EditorConnectionState | null) => ({
       ...prev,
-      settingsEditor: true
+      settingsEditor: true,
+      unlockFailures: 0
     }));
     return this.access();
   }

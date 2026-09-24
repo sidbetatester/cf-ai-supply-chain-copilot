@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAgent } from "agents/react";
-import { Badge, Button, Switch, Text } from "@cloudflare/kumo";
+import { Badge, Button, Switch, Text, TooltipProvider } from "@cloudflare/kumo";
 import { Toasty, useKumoToastManager } from "@cloudflare/kumo/components/toast";
 import {
   ArrowCounterClockwiseIcon,
@@ -25,10 +25,16 @@ import {
   type PluginInfo
 } from "./plugins/catalog";
 import type { SettingsAgent } from "./agents/settings-agent";
-import type { ProjectState, ProjectSummary } from "./shared";
+import {
+  sha256Hex,
+  type ChatMeta,
+  type ProjectState,
+  type ProjectSummary
+} from "./shared";
 import { Chat } from "./components/chat";
 import { Dashboard } from "./components/dashboard";
 import { Sidebar } from "./components/sidebar";
+import { Tip } from "./components/tip";
 import { SettingsPanel, type SettingsConnection } from "./components/settings";
 
 // ── Routing: #/<projectId>/<chatId> ───────────────────────────────────
@@ -83,6 +89,36 @@ function useApi<T>(path: string) {
   return state;
 }
 
+// ── Chat ownership: a random per-browser token (only its hash is shared) ──
+
+const OWNER_TOKEN_KEY = "chatOwnerToken";
+
+function useOwnerToken() {
+  const [token] = useState(() => {
+    try {
+      const stored = localStorage.getItem(OWNER_TOKEN_KEY);
+      if (stored) return stored;
+    } catch {
+      // Storage blocked: the token lasts for this page load only.
+    }
+    const created = `${crypto.randomUUID()}${crypto.randomUUID()}`.replaceAll(
+      "-",
+      ""
+    );
+    try {
+      localStorage.setItem(OWNER_TOKEN_KEY, created);
+    } catch {
+      // As above.
+    }
+    return created;
+  });
+  const [hash, setHash] = useState<string>();
+  useEffect(() => {
+    sha256Hex(token).then(setHash);
+  }, [token]);
+  return { token, hash };
+}
+
 // ── Per-viewer preferences (best effort; storage may be unavailable) ──
 
 function usePersistentFlag(key: string, initial: boolean) {
@@ -124,13 +160,18 @@ function ThemeToggle() {
     }
   }, [dark]);
   return (
-    <Button
-      variant="secondary"
-      shape="square"
-      icon={dark ? <SunIcon size={16} /> : <MoonIcon size={16} />}
-      onClick={toggle}
-      aria-label="Toggle theme"
-    />
+    <Tip
+      content={dark ? "Switch to light mode" : "Switch to dark mode"}
+      side="bottom"
+    >
+      <Button
+        variant="secondary"
+        shape="square"
+        icon={dark ? <SunIcon size={16} /> : <MoonIcon size={16} />}
+        onClick={toggle}
+        aria-label="Toggle theme"
+      />
+    </Tip>
   );
 }
 
@@ -141,6 +182,8 @@ function Workspace({
   catalog,
   commands,
   settings,
+  adminKey,
+  onAdminKey,
   projectId,
   chatId,
   navigate
@@ -149,6 +192,9 @@ function Workspace({
   catalog: Catalog;
   commands: CommandInfo[];
   settings: SettingsConnection;
+  /** Set after unlocking Settings; enables admin-only project actions. */
+  adminKey: string | undefined;
+  onAdminKey: (key: string) => void;
   projectId: string;
   chatId: string | undefined;
   navigate: ReturnType<typeof useHashRoute>[1];
@@ -187,16 +233,43 @@ function Workspace({
     )
   });
 
+  // On small screens the sidebar is a drawer: close it once a choice is made.
+  const closeSidebarOnMobile = useCallback(() => {
+    if (window.matchMedia("(max-width: 767px)").matches)
+      setSidebarCollapsed(true);
+  }, [setSidebarCollapsed]);
+
+  const owner = useOwnerToken();
+  const canManageChat = useCallback(
+    (chat: ChatMeta) => !chat.ownerHash || chat.ownerHash === owner.hash,
+    [owner.hash]
+  );
+  /** Run a project action, surfacing failures (e.g. limits, permissions) as a toast. */
+  const attempt = useCallback(
+    (title: string, action: () => Promise<unknown>) =>
+      action().catch((e: unknown) =>
+        toasts.add({
+          title,
+          description: e instanceof Error ? e.message : String(e)
+        })
+      ),
+    [toasts]
+  );
+
   const selectChat = useCallback(
     (id: string, opts?: { replace?: boolean }) =>
       navigate({ projectId, chatId: id }, opts),
     [navigate, projectId]
   );
 
-  const newChat = useCallback(async () => {
-    const chat = await project.stub.createChat();
-    selectChat(chat.id);
-  }, [project, selectChat]);
+  const newChat = useCallback(
+    () =>
+      attempt("Couldn't create a chat", async () => {
+        const chat = await project.stub.createChat(owner.token);
+        selectChat(chat.id);
+      }),
+    [attempt, project, owner.token, selectChat]
+  );
 
   // Keep the route pointing at a real chat: open the newest, or create one.
   const chats = state?.chats;
@@ -204,10 +277,11 @@ function Workspace({
     if (!chats || (chatId && chats.some((c) => c.id === chatId))) return;
     if (chats.length > 0) selectChat(chats[0].id, { replace: true });
     else
-      project.stub
-        .createChat()
-        .then((c) => selectChat(c.id, { replace: true }));
-  }, [chats, chatId, project, selectChat]);
+      attempt("Couldn't create a chat", async () => {
+        const chat = await project.stub.createChat(owner.token);
+        selectChat(chat.id, { replace: true });
+      });
+  }, [chats, chatId, project, owner.token, attempt, selectChat]);
 
   const activeChat =
     chatId && chats?.some((c) => c.id === chatId) ? chatId : undefined;
@@ -217,14 +291,17 @@ function Workspace({
       <header className="px-4 py-3 bg-kumo-base border-b border-kumo-line">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 min-w-0">
-            <Button
-              variant="ghost"
-              shape="square"
-              className="md:hidden"
-              aria-label="Toggle sidebar"
-              icon={<ListIcon size={18} />}
-              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-            />
+            <span className="md:hidden">
+              <Tip content="Show or hide projects and chats" side="bottom">
+                <Button
+                  variant="ghost"
+                  shape="square"
+                  aria-label="Toggle sidebar"
+                  icon={<ListIcon size={18} />}
+                  onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+                />
+              </Tip>
+            </span>
             <h1 className="text-lg font-semibold text-kumo-default truncate">
               <TruckIcon
                 size={20}
@@ -233,12 +310,15 @@ function Workspace({
               />
               Supply Chain Copilot
             </h1>
-            <Badge variant="secondary" className="hidden sm:inline-flex">
+            <Badge variant="secondary" className="hidden lg:inline-flex">
               Llama 3.3 · Workers AI
             </Badge>
           </div>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            <output
+              className="hidden sm:flex items-center gap-1.5"
+              aria-live="polite"
+            >
               <CircleIcon
                 size={8}
                 weight="fill"
@@ -249,47 +329,78 @@ function Workspace({
               <Text size="xs" variant="secondary">
                 {chatConnected ? "Connected" : "Connecting…"}
               </Text>
-            </div>
-            <div className="hidden sm:flex items-center gap-1.5">
-              <BugIcon size={14} className="text-kumo-inactive" />
-              <Switch
-                checked={showDebug}
-                onCheckedChange={setShowDebug}
-                size="sm"
-                aria-label="Toggle debug mode"
-              />
-            </div>
+            </output>
+            <Tip content="Debug: show each message's raw data" side="bottom">
+              <div className="hidden md:flex items-center gap-1.5">
+                <BugIcon size={14} className="text-kumo-inactive" />
+                <Switch
+                  checked={showDebug}
+                  onCheckedChange={setShowDebug}
+                  size="sm"
+                  aria-label="Toggle debug mode"
+                />
+              </div>
+            </Tip>
             <ThemeToggle />
-            <Button
-              variant="secondary"
-              shape="square"
-              aria-label="Settings"
-              icon={<GearSixIcon size={16} />}
-              onClick={() => setShowSettings(true)}
-            />
-            <Button
-              variant="secondary"
-              shape="square"
-              className="lg:hidden"
-              aria-label="Toggle dashboard"
-              icon={<ChartBarIcon size={16} />}
-              onClick={() => setShowDashboard((v) => !v)}
-            />
-            <Button
-              variant="secondary"
-              icon={<ArrowCounterClockwiseIcon size={16} />}
-              onClick={() => {
-                if (
-                  confirm(
-                    "Reload this project's data from its source files? Changes made in chats will be discarded."
-                  )
-                ) {
-                  project.stub.resetProject();
-                }
-              }}
+            <Tip
+              content="Settings: plugins, skills, commands, workflows and tools"
+              side="bottom"
             >
-              <span className="hidden sm:inline">Reload data</span>
-            </Button>
+              <Button
+                variant="secondary"
+                shape="square"
+                aria-label="Settings"
+                icon={<GearSixIcon size={16} />}
+                onClick={() => setShowSettings(true)}
+              />
+            </Tip>
+            <span className="xl:hidden">
+              <Tip
+                content={
+                  showDashboard
+                    ? "Back to the chat"
+                    : "Show the project dashboard"
+                }
+                side="bottom"
+              >
+                <Button
+                  variant={showDashboard ? "primary" : "secondary"}
+                  shape="square"
+                  aria-label="Toggle dashboard"
+                  aria-pressed={showDashboard}
+                  icon={<ChartBarIcon size={16} />}
+                  onClick={() => setShowDashboard((v) => !v)}
+                />
+              </Tip>
+            </span>
+            <Tip
+              content={
+                adminKey
+                  ? "Reset this project's data to its source files in data/"
+                  : "Admin only: unlock Settings with the admin key to reload project data"
+              }
+              side="bottom"
+            >
+              <Button
+                variant="secondary"
+                icon={<ArrowCounterClockwiseIcon size={16} />}
+                disabled={!adminKey}
+                onClick={() => {
+                  if (
+                    adminKey &&
+                    confirm(
+                      "Reload this project's data from its source files? Changes made in chats will be discarded."
+                    )
+                  ) {
+                    attempt("Couldn't reload data", () =>
+                      project.stub.resetProject(adminKey)
+                    );
+                  }
+                }}
+              >
+                <span className="hidden sm:inline">Reload data</span>
+              </Button>
+            </Tip>
           </div>
         </div>
       </header>
@@ -302,15 +413,30 @@ function Workspace({
           activeChatId={activeChat}
           collapsed={sidebarCollapsed}
           onToggleCollapsed={() => setSidebarCollapsed(!sidebarCollapsed)}
-          onSelectProject={(id) => navigate({ projectId: id })}
-          onSelectChat={selectChat}
+          onSelectProject={(id) => {
+            closeSidebarOnMobile();
+            navigate({ projectId: id });
+          }}
+          onSelectChat={(id) => {
+            closeSidebarOnMobile();
+            selectChat(id);
+          }}
           onNewChat={newChat}
-          onRenameChat={(id, title) => project.stub.renameChat(id, title)}
-          onDeleteChat={(id) => project.stub.deleteChat(id)}
+          canManageChat={canManageChat}
+          onRenameChat={(id, title) =>
+            attempt("Couldn't rename the chat", () =>
+              project.stub.renameChat(id, title, owner.token)
+            )
+          }
+          onDeleteChat={(id) =>
+            attempt("Couldn't delete the chat", () =>
+              project.stub.deleteChat(id, owner.token)
+            )
+          }
         />
 
         <div
-          className={`flex-1 min-w-0 ${showDashboard ? "hidden lg:flex" : "flex"}`}
+          className={`flex-1 min-w-0 ${showDashboard ? "hidden xl:flex" : "flex"}`}
         >
           {activeChat ? (
             <Chat
@@ -329,7 +455,8 @@ function Workspace({
         </div>
 
         <aside
-          className={`w-full lg:w-[440px] shrink-0 border-l border-kumo-line bg-kumo-base overflow-y-auto ${showDashboard ? "block" : "hidden lg:block"}`}
+          aria-label="Project dashboard"
+          className={`min-w-0 flex-1 xl:flex-none xl:w-[400px] border-l border-kumo-line bg-kumo-base overflow-y-auto overflow-x-hidden ${showDashboard ? "block" : "hidden xl:block"}`}
         >
           <Dashboard state={state} />
         </aside>
@@ -339,6 +466,7 @@ function Workspace({
         <SettingsPanel
           catalog={catalog}
           settings={settings}
+          onUnlocked={onAdminKey}
           onClose={() => setShowSettings(false)}
         />
       )}
@@ -370,6 +498,8 @@ function Shell() {
     [pluginsApi.data, overrides]
   );
   const commands = useMemo(() => catalog && listCommands(catalog), [catalog]);
+  // Held in memory only after a successful Settings unlock (never stored).
+  const [adminKey, setAdminKey] = useState<string>();
 
   const projectId =
     projects?.find((p) => p.id === route.projectId)?.id ?? projects?.[0]?.id;
@@ -395,6 +525,8 @@ function Shell() {
       catalog={catalog}
       commands={commands}
       settings={settings}
+      adminKey={adminKey}
+      onAdminKey={setAdminKey}
       projectId={projectId}
       chatId={route.chatId}
       navigate={navigate}
@@ -412,8 +544,10 @@ function Centered({ children }: { children: React.ReactNode }) {
 
 export default function App() {
   return (
-    <Toasty>
-      <Shell />
-    </Toasty>
+    <TooltipProvider>
+      <Toasty>
+        <Shell />
+      </Toasty>
+    </TooltipProvider>
   );
 }

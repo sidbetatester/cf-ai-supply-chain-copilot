@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { Badge } from "@cloudflare/kumo";
+import { Tip } from "./tip";
 import type { CommandInfo } from "../plugins/catalog";
 import { parseSlashCommand } from "../shared";
 
@@ -93,29 +94,35 @@ export function CommandMenu({
     >
       {menu.matches.map((c, i) => (
         <li key={c.name}>
-          <button
-            type="button"
-            aria-current={i === menu.highlight}
-            onMouseEnter={() => menu.setHighlight(i)}
-            onMouseDown={(e) => {
-              e.preventDefault(); // keep focus in the input
-              onSelect(c);
-            }}
-            className={`w-full flex items-baseline gap-2 px-3 py-2 rounded-lg text-left text-sm ${i === menu.highlight ? "bg-kumo-control" : ""}`}
+          <Tip
+            content={`${c.description}${c.argumentHint ? ` · then add ${c.argumentHint}` : ""}`}
+            side="right"
+            block
           >
-            <span className="font-mono text-kumo-default">/{c.name}</span>
-            {c.kind === "workflow" && (
-              <Badge variant="secondary">workflow</Badge>
-            )}
-            {c.argumentHint && (
-              <span className="font-mono text-xs text-kumo-subtle">
-                {c.argumentHint}
+            <button
+              type="button"
+              aria-current={i === menu.highlight}
+              onMouseEnter={() => menu.setHighlight(i)}
+              onMouseDown={(e) => {
+                e.preventDefault(); // keep focus in the input
+                onSelect(c);
+              }}
+              className={`w-full flex items-baseline gap-2 px-3 py-2 rounded-lg text-left text-sm ${i === menu.highlight ? "bg-kumo-control" : ""}`}
+            >
+              <span className="font-mono text-kumo-default">/{c.name}</span>
+              {c.kind === "workflow" && (
+                <Badge variant="secondary">workflow</Badge>
+              )}
+              {c.argumentHint && (
+                <span className="font-mono text-xs text-kumo-subtle">
+                  {c.argumentHint}
+                </span>
+              )}
+              <span className="ml-auto text-xs text-kumo-subtle truncate">
+                {c.description}
               </span>
-            )}
-            <span className="ml-auto text-xs text-kumo-subtle truncate">
-              {c.description}
-            </span>
-          </button>
+            </button>
+          </Tip>
         </li>
       ))}
     </ul>

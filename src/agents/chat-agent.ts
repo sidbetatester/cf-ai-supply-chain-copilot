@@ -19,8 +19,13 @@ import type {
   PlaybookStepEvent
 } from "../workflows/playbook-workflow";
 
-import { denySubAgents, rejectClientStateChange } from "./guards";
+import {
+  denySubAgents,
+  rejectClientStateChange,
+  withinRateLimit
+} from "./guards";
 const MAX_STEPS = 10;
+const MAX_MESSAGE_CHARS = 8000;
 const WORKFLOW_BINDING = "PLAYBOOK_WORKFLOW";
 
 const textOf = (message: UIMessage | undefined) =>
@@ -71,7 +76,19 @@ export class ChatAgent extends AIChatAgent<Env> {
       if (text) await project.titleChatIfUntitled(chatId, text);
     }
 
-    const command = parseSlashCommand(textOf(this.messages.at(-1)));
+    // Bound Workers AI spend: message size, then a per-project rate limit
+    // (see "ratelimits" in wrangler.jsonc). Both reply without calling the model.
+    const latest = textOf(this.messages.at(-1));
+    if (latest.length > MAX_MESSAGE_CHARS)
+      return replyWith(
+        `That message is ${latest.length.toLocaleString()} characters; the limit is ${MAX_MESSAGE_CHARS.toLocaleString()}. Please shorten it or split it up.`
+      );
+    if (!(await withinRateLimit(this.env, `chat:${projectId}`)))
+      return replyWith(
+        "This project is receiving a lot of requests right now. Please wait a minute and try again."
+      );
+
+    const command = parseSlashCommand(latest);
     const workflow =
       command &&
       catalog.flatMap((p) => p.workflows).find((w) => w.name === command.name);
