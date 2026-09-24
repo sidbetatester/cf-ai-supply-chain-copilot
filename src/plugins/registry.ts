@@ -4,6 +4,7 @@
 import { parse as parseYaml } from "yaml";
 import { parseMarkdown, validate } from "../validate";
 import {
+  KEBAB_NAME,
   PluginManifestSchema,
   PromptMetaSchema,
   SkillMetaSchema,
@@ -46,11 +47,10 @@ export type RegisteredTool = ToolDefinition & { name: string; plugin: string };
 
 const PATH_RE =
   /\/plugins\/([^/]+)\/(?:(skills|prompts|tools|workflows)\/)?([^/]+)\.(json|md|ts|yaml)$/;
-const KEBAB = /^[a-z0-9][a-z0-9-]*$/;
 const NAME_RULES = {
-  skills: KEBAB,
-  prompts: KEBAB,
-  workflows: KEBAB,
+  skills: KEBAB_NAME,
+  prompts: KEBAB_NAME,
+  workflows: KEBAB_NAME,
   tools: /^[a-zA-Z][a-zA-Z0-9_]*$/
 } as const;
 

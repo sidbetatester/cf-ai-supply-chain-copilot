@@ -12,14 +12,19 @@ import {
   XIcon
 } from "@phosphor-icons/react";
 import type { SettingsAgent } from "../agents/settings-agent";
-import type {
-  Catalog,
-  EffectivePlugin,
-  ItemKind,
-  Overrides,
-  SettingsAccess,
-  WorkflowStep
+import {
+  CUSTOM_PLUGIN,
+  type Catalog,
+  type EffectivePlugin,
+  type ItemKind,
+  type Overrides,
+  type PromptInfo,
+  type SettingsAccess,
+  type SkillInfo,
+  type WorkflowInfo,
+  type WorkflowStep
 } from "../plugins/catalog";
+import { Tip } from "./tip";
 
 export type SettingsConnection = ReturnType<
   typeof useAgent<SettingsAgent, Overrides>
@@ -29,7 +34,28 @@ type EditableKind = "skill" | "prompt" | "workflow";
 interface Selection {
   kind: ItemKind;
   name: string;
+  /** Creating a new custom item of `kind` (name is chosen in the editor). */
+  isNew?: boolean;
 }
+
+const KIND_LABEL: Record<EditableKind, string> = {
+  skill: "skill",
+  prompt: "command",
+  workflow: "workflow"
+};
+
+/** Starting values for new custom items. */
+const NEW_ITEM = {
+  skill: { description: "", always: false, body: "", modified: false },
+  prompt: { description: "", argumentHint: "", body: "", modified: false },
+  workflow: {
+    description: "",
+    argumentHint: "",
+    steps: [{ name: "Step 1", prompt: "", tools: [] }] as WorkflowStep[],
+    problems: [] as string[],
+    modified: false
+  }
+};
 
 const SECTIONS = [
   { key: "skills", kind: "skill", label: "Skills" },
@@ -100,26 +126,40 @@ export function SettingsPanel({
             </Text>
           </div>
           <div className="flex items-center gap-2">
-            <Button
-              variant="secondary"
-              icon={<ArrowCounterClockwiseIcon size={16} />}
-              disabled={!canEdit}
-              onClick={() => {
-                if (confirm("Reset all Settings to the plugin defaults?"))
-                  run(() => settings.stub.resetAll()).then(
-                    (ok) => ok && setResetAllCount((n) => n + 1)
-                  );
-              }}
+            <Tip
+              content={
+                canEdit
+                  ? "Discard every Settings change and restore the plugin defaults"
+                  : "Read-only: unlock editing with the admin key"
+              }
+              side="bottom"
             >
-              Reset all
-            </Button>
-            <Button
-              variant="secondary"
-              shape="square"
-              aria-label="Close settings"
-              icon={<XIcon size={16} />}
-              onClick={onClose}
-            />
+              <Button
+                variant="secondary"
+                icon={<ArrowCounterClockwiseIcon size={16} />}
+                disabled={!canEdit}
+                onClick={() => {
+                  if (confirm("Reset all Settings to the plugin defaults?"))
+                    run(() => settings.stub.resetAll()).then(
+                      (ok) => ok && setResetAllCount((n) => n + 1)
+                    );
+                }}
+              >
+                Reset all
+              </Button>
+            </Tip>
+            <Tip
+              content="Close Settings (changes are already saved)"
+              side="bottom"
+            >
+              <Button
+                variant="secondary"
+                shape="square"
+                aria-label="Close settings"
+                icon={<XIcon size={16} />}
+                onClick={onClose}
+              />
+            </Tip>
           </div>
         </header>
 
@@ -158,7 +198,8 @@ export function SettingsPanel({
           </nav>
           <main className="flex-1 min-w-0 overflow-y-auto p-4 md:p-6">
             <Editor
-              key={resetAllCount}
+              key={`${resetAllCount}:${selection.kind}:${selection.name}:${!!selection.isNew}`}
+              onSelect={setSelection}
               catalog={catalog}
               selection={selection}
               settings={settings}
@@ -206,9 +247,11 @@ function UnlockBar({
             onChange={(e) => setKey(e.target.value)}
             className="px-3 py-1 text-sm rounded-lg border border-kumo-line bg-kumo-base text-kumo-default focus:outline-none focus:ring-1 focus:ring-kumo-ring"
           />
-          <Button type="submit" variant="primary" size="sm" disabled={!key}>
-            Unlock editing
-          </Button>
+          <Tip content="Allow editing in this browser tab until you reload">
+            <Button type="submit" variant="primary" size="sm" disabled={!key}>
+              Unlock editing
+            </Button>
+          </Tip>
         </form>
       )}
     </div>
@@ -228,8 +271,10 @@ function PluginList({
   onSelect: (s: Selection) => void;
   onToggle: (kind: ItemKind, name: string, enabled: boolean) => void;
 }) {
+  const canEdit = useContext(CanEdit);
+  const isCustom = plugin.id === CUSTOM_PLUGIN.id;
   const isSelected = (kind: ItemKind, name: string) =>
-    selection.kind === kind && selection.name === name;
+    !selection.isNew && selection.kind === kind && selection.name === name;
   return (
     <section>
       <Row
@@ -237,16 +282,39 @@ function PluginList({
         sublabel={`v${plugin.version}`}
         selected={isSelected("plugin", plugin.id)}
         enabled={plugin.enabled}
+        hint={plugin.description}
         onSelect={() => onSelect({ kind: "plugin", name: plugin.id })}
         onToggle={(on) => onToggle("plugin", plugin.id, on)}
         strong
       />
       {SECTIONS.map(({ key, kind, label }) =>
-        plugin[key].length === 0 ? null : (
+        plugin[key].length === 0 && !(isCustom && kind !== "tool") ? null : (
           <div key={key} className="mt-2">
-            <Text size="xs" variant="secondary" bold>
-              {label.toUpperCase()}
-            </Text>
+            <div className="flex items-center justify-between">
+              <Text size="xs" variant="secondary" bold>
+                {label.toUpperCase()}
+              </Text>
+              {isCustom && kind !== "tool" && (
+                <Tip
+                  content={
+                    canEdit
+                      ? `Create a new ${KIND_LABEL[kind]}`
+                      : "Read-only: unlock editing with the admin key"
+                  }
+                >
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    icon={<PlusIcon size={12} />}
+                    disabled={!canEdit}
+                    aria-label={`New ${KIND_LABEL[kind]}`}
+                    onClick={() => onSelect({ kind, name: "", isNew: true })}
+                  >
+                    New
+                  </Button>
+                </Tip>
+              )}
+            </div>
             <ul className="mt-1 space-y-0.5">
               {plugin[key].map((item) => (
                 <li key={item.name}>
@@ -260,7 +328,15 @@ function PluginList({
                     enabled={item.enabled}
                     locked={!plugin.enabled}
                     modified={item.modified}
-                    warning={"problems" in item && item.problems.length > 0}
+                    warning={
+                      !!item.shadowedBy ||
+                      ("problems" in item && item.problems.length > 0)
+                    }
+                    hint={
+                      item.shadowedBy
+                        ? `Inactive: the ${item.shadowedBy} plugin defines the same name`
+                        : item.description
+                    }
                     onSelect={() => onSelect({ kind, name: item.name })}
                     onToggle={(on) => onToggle(kind, item.name, on)}
                   />
@@ -283,10 +359,13 @@ function Row({
   modified,
   warning,
   strong,
+  hint,
   onSelect,
   onToggle
 }: {
   label: string;
+  /** Shown as the row's tooltip (usually the item's description). */
+  hint: string;
   sublabel?: string;
   selected: boolean;
   enabled: boolean;
@@ -302,38 +381,52 @@ function Row({
     <div
       className={`flex items-center gap-2 rounded-lg px-2 py-1 ${selected ? "bg-kumo-control" : "hover:bg-kumo-control"}`}
     >
-      <button
-        type="button"
-        onClick={onSelect}
-        className={`flex-1 min-w-0 flex items-center gap-1.5 text-left text-sm ${enabled ? "text-kumo-default" : "text-kumo-subtle line-through"} ${strong ? "font-semibold" : "font-mono"}`}
+      <Tip content={hint} side="right" block>
+        <button
+          type="button"
+          onClick={onSelect}
+          className={`flex-1 min-w-0 flex items-center gap-1.5 text-left text-sm ${enabled ? "text-kumo-default" : "text-kumo-subtle line-through"} ${strong ? "font-semibold" : "font-mono"}`}
+        >
+          <span className="truncate">{label}</span>
+          {sublabel && (
+            <span className="text-xs text-kumo-subtle font-normal">
+              {sublabel}
+            </span>
+          )}
+          {modified && (
+            <span
+              className="size-1.5 rounded-full bg-kumo-brand shrink-0"
+              title="Edited"
+            />
+          )}
+          {warning && (
+            <WarningIcon
+              size={12}
+              className="text-amber-500 shrink-0"
+              aria-label="Has problems"
+            />
+          )}
+        </button>
+      </Tip>
+      <Tip
+        content={
+          !canEdit
+            ? "Read-only: unlock editing with the admin key"
+            : locked
+              ? "Its plugin is turned off; turn the plugin on first"
+              : enabled
+                ? `Turn off ${label}`
+                : `Turn on ${label}`
+        }
       >
-        <span className="truncate">{label}</span>
-        {sublabel && (
-          <span className="text-xs text-kumo-subtle font-normal">
-            {sublabel}
-          </span>
-        )}
-        {modified && (
-          <span
-            className="size-1.5 rounded-full bg-kumo-brand shrink-0"
-            title="Edited"
-          />
-        )}
-        {warning && (
-          <WarningIcon
-            size={12}
-            className="text-amber-500 shrink-0"
-            aria-label="Has problems"
-          />
-        )}
-      </button>
-      <Switch
-        size="sm"
-        checked={enabled}
-        disabled={locked || !canEdit}
-        onCheckedChange={onToggle}
-        aria-label={`${enabled ? "Disable" : "Enable"} ${label}`}
-      />
+        <Switch
+          size="sm"
+          checked={enabled}
+          disabled={locked || !canEdit}
+          onCheckedChange={onToggle}
+          aria-label={`${enabled ? "Disable" : "Enable"} ${label}`}
+        />
+      </Tip>
     </div>
   );
 }
@@ -347,19 +440,66 @@ function Editor({
   selection,
   settings,
   run,
-  onToggle
+  onToggle,
+  onSelect
 }: {
   catalog: Catalog;
   selection: Selection;
   settings: SettingsConnection;
   run: Run;
   onToggle: (kind: ItemKind, name: string, enabled: boolean) => void;
+  onSelect: (s: Selection) => void;
 }) {
   const canEdit = useContext(CanEdit);
   // Bumped on "Reset to default" so the editor reloads the restored content;
   // saves keep the draft (it already matches) so the "Saved" status shows.
   const [resets, setResets] = useState(0);
+  const [newName, setNewName] = useState("");
   const { kind, name } = selection;
+
+  if (selection.isNew && kind !== "plugin" && kind !== "tool") {
+    const create = async (fields: Record<string, unknown>) => {
+      const created = newName.trim();
+      const ok = await run(() => settings.stub.create(kind, created, fields));
+      if (ok) onSelect({ kind, name: created });
+      return ok;
+    };
+    return (
+      <div className="max-w-3xl space-y-4">
+        <div>
+          <h3 className="text-base font-semibold text-kumo-default">
+            New {KIND_LABEL[kind]}
+          </h3>
+          <Text size="xs" variant="secondary">
+            Created in the Custom plugin; available immediately after saving.
+          </Text>
+        </div>
+        <Field
+          label="Name"
+          hint={`Lowercase letters, numbers and dashes${kind === "skill" ? "" : `; used as /${newName || "name"}`}.`}
+        >
+          <TextInput
+            value={newName}
+            onChange={(v) => setNewName(v.toLowerCase())}
+            ariaLabel="Name"
+          />
+        </Field>
+        {kind === "skill" && (
+          <SkillEditor skill={NEW_ITEM.skill} onSave={create} />
+        )}
+        {kind === "prompt" && (
+          <PromptEditor prompt={NEW_ITEM.prompt} onSave={create} />
+        )}
+        {kind === "workflow" && (
+          <WorkflowEditor
+            workflow={NEW_ITEM.workflow}
+            catalog={catalog}
+            onSave={create}
+          />
+        )}
+      </div>
+    );
+  }
   const plugin = catalog.find(
     (p) => (kind === "plugin" ? p.id === name : true) && findItem(p, kind, name)
   );
@@ -381,12 +521,22 @@ function Editor({
         {"modified" in item && item.modified === true && (
           <Badge variant="secondary">Edited</Badge>
         )}
-        <Switch
-          checked={item.enabled}
-          disabled={!canEdit || (kind !== "plugin" && !plugin.enabled)}
-          onCheckedChange={(on) => onToggle(kind, name, on)}
-          aria-label={item.enabled ? "Disable" : "Enable"}
-        />
+        <Tip
+          content={
+            canEdit
+              ? item.enabled
+                ? "Turn this off"
+                : "Turn this on"
+              : "Read-only: unlock editing with the admin key"
+          }
+        >
+          <Switch
+            checked={item.enabled}
+            disabled={!canEdit || (kind !== "plugin" && !plugin.enabled)}
+            onCheckedChange={(on) => onToggle(kind, name, on)}
+            aria-label={item.enabled ? "Disable" : "Enable"}
+          />
+        </Tip>
       </div>
     </div>
   );
@@ -440,18 +590,37 @@ function Editor({
     if (ok) setResets((n) => n + 1);
     return ok;
   };
+  const isCustom = "custom" in item && item.custom === true;
+  const remove = async () => {
+    const ok = await run(() => settings.stub.remove(editable, name));
+    if (ok) onSelect({ kind: "plugin", name: CUSTOM_PLUGIN.id });
+    return ok;
+  };
+  // Custom items have no default to reset to; they can be deleted instead.
+  const actions = isCustom ? { onDelete: remove } : { onReset: reset };
+  const shadowedBy =
+    "shadowedBy" in item && typeof item.shadowedBy === "string"
+      ? item.shadowedBy
+      : undefined;
   const subtitle = `${kind === "prompt" ? "Command" : kind[0].toUpperCase() + kind.slice(1)} · plugin ${plugin.id}`;
   const contentKey = `${kind}:${name}:${resets}`;
 
   return (
     <div className="max-w-3xl">
       {header(kind === "skill" ? name : `/${name}`, subtitle)}
+      {shadowedBy && (
+        <Notice>
+          The {shadowedBy} plugin now defines "{name}", so this custom{" "}
+          {KIND_LABEL[editable]} is inactive. Recreate it under a new name, then
+          delete this one.
+        </Notice>
+      )}
       {kind === "skill" && (
         <SkillEditor
           key={contentKey}
           skill={plugin.skills.find((s) => s.name === name)!}
           onSave={save}
-          onReset={reset}
+          {...actions}
         />
       )}
       {kind === "prompt" && (
@@ -459,7 +628,7 @@ function Editor({
           key={contentKey}
           prompt={plugin.prompts.find((p) => p.name === name)!}
           onSave={save}
-          onReset={reset}
+          {...actions}
         />
       )}
       {kind === "workflow" && (
@@ -468,7 +637,7 @@ function Editor({
           workflow={plugin.workflows.find((w) => w.name === name)!}
           catalog={catalog}
           onSave={save}
-          onReset={reset}
+          {...actions}
         />
       )}
     </div>
@@ -484,25 +653,28 @@ function findItem(plugin: EffectivePlugin, kind: ItemKind, name: string) {
 
 interface EditorProps {
   onSave: (fields: Record<string, unknown>) => Promise<boolean>;
-  onReset: () => Promise<boolean>;
+  /** Restore the bundled default (bundled items). */
+  onReset?: () => Promise<boolean>;
+  /** Delete the item (custom items). */
+  onDelete?: () => Promise<boolean>;
 }
 
 function SkillEditor({
   skill,
   onSave,
-  onReset
-}: EditorProps & { skill: Catalog[number]["skills"][number] }) {
+  ...actions
+}: EditorProps & {
+  skill: Pick<SkillInfo, "description" | "always" | "body"> & {
+    modified: boolean;
+  };
+}) {
   const [draft, setDraft] = useState({
     description: skill.description,
     always: skill.always,
     body: skill.body
   });
   return (
-    <Form
-      onSave={() => onSave(draft)}
-      onReset={onReset}
-      modified={skill.modified}
-    >
+    <Form onSave={() => onSave(draft)} {...actions} modified={skill.modified}>
       <Field
         label="Description"
         hint="Shown to the agent in the skills directory; say when to use it."
@@ -534,19 +706,19 @@ function SkillEditor({
 function PromptEditor({
   prompt,
   onSave,
-  onReset
-}: EditorProps & { prompt: Catalog[number]["prompts"][number] }) {
+  ...actions
+}: EditorProps & {
+  prompt: Pick<PromptInfo, "description" | "argumentHint" | "body"> & {
+    modified: boolean;
+  };
+}) {
   const [draft, setDraft] = useState({
     description: prompt.description,
     argumentHint: prompt.argumentHint ?? "",
     body: prompt.body
   });
   return (
-    <Form
-      onSave={() => onSave(draft)}
-      onReset={onReset}
-      modified={prompt.modified}
-    >
+    <Form onSave={() => onSave(draft)} {...actions} modified={prompt.modified}>
       <Field label="Description" hint="Shown in the / command menu.">
         <TextInput
           value={draft.description}
@@ -580,9 +752,12 @@ function WorkflowEditor({
   workflow,
   catalog,
   onSave,
-  onReset
+  ...actions
 }: EditorProps & {
-  workflow: Catalog[number]["workflows"][number];
+  workflow: Pick<WorkflowInfo, "description" | "argumentHint" | "steps"> & {
+    problems: string[];
+    modified: boolean;
+  };
   catalog: Catalog;
 }) {
   const [draft, setDraft] = useState({
@@ -608,7 +783,7 @@ function WorkflowEditor({
   return (
     <Form
       onSave={() => onSave(draft)}
-      onReset={onReset}
+      {...actions}
       modified={workflow.modified}
     >
       {workflow.problems.length > 0 && (
@@ -657,38 +832,44 @@ function WorkflowEditor({
                   ariaLabel={`Step ${i + 1} name`}
                 />
               </div>
-              <Button
-                variant="ghost"
-                shape="square"
-                size="sm"
-                aria-label="Move step up"
-                disabled={i === 0}
-                icon={<ArrowUpIcon size={14} />}
-                onClick={() => moveStep(i, -1)}
-              />
-              <Button
-                variant="ghost"
-                shape="square"
-                size="sm"
-                aria-label="Move step down"
-                disabled={i === draft.steps.length - 1}
-                icon={<ArrowDownIcon size={14} />}
-                onClick={() => moveStep(i, 1)}
-              />
-              <Button
-                variant="ghost"
-                shape="square"
-                size="sm"
-                aria-label="Remove step"
-                disabled={draft.steps.length === 1}
-                icon={<TrashIcon size={14} />}
-                onClick={() =>
-                  setDraft({
-                    ...draft,
-                    steps: draft.steps.filter((_, j) => j !== i)
-                  })
-                }
-              />
+              <Tip content="Move this step earlier">
+                <Button
+                  variant="ghost"
+                  shape="square"
+                  size="sm"
+                  aria-label="Move step up"
+                  disabled={i === 0}
+                  icon={<ArrowUpIcon size={14} />}
+                  onClick={() => moveStep(i, -1)}
+                />
+              </Tip>
+              <Tip content="Move this step later">
+                <Button
+                  variant="ghost"
+                  shape="square"
+                  size="sm"
+                  aria-label="Move step down"
+                  disabled={i === draft.steps.length - 1}
+                  icon={<ArrowDownIcon size={14} />}
+                  onClick={() => moveStep(i, 1)}
+                />
+              </Tip>
+              <Tip content="Remove this step (a workflow needs at least one)">
+                <Button
+                  variant="ghost"
+                  shape="square"
+                  size="sm"
+                  aria-label="Remove step"
+                  disabled={draft.steps.length === 1}
+                  icon={<TrashIcon size={14} />}
+                  onClick={() =>
+                    setDraft({
+                      ...draft,
+                      steps: draft.steps.filter((_, j) => j !== i)
+                    })
+                  }
+                />
+              </Tip>
             </div>
             <Field label="Skill">
               <select
@@ -750,27 +931,29 @@ function WorkflowEditor({
             </Field>
           </div>
         ))}
-        <Button
-          variant="secondary"
-          size="sm"
-          icon={<PlusIcon size={14} />}
-          disabled={draft.steps.length >= 10}
-          onClick={() =>
-            setDraft({
-              ...draft,
-              steps: [
-                ...draft.steps,
-                {
-                  name: `Step ${draft.steps.length + 1}`,
-                  prompt: "",
-                  tools: []
-                }
-              ]
-            })
-          }
-        >
-          Add step
-        </Button>
+        <Tip content="Add a step at the end (up to 10)">
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={<PlusIcon size={14} />}
+            disabled={draft.steps.length >= 10}
+            onClick={() =>
+              setDraft({
+                ...draft,
+                steps: [
+                  ...draft.steps,
+                  {
+                    name: `Step ${draft.steps.length + 1}`,
+                    prompt: "",
+                    tools: []
+                  }
+                ]
+              })
+            }
+          >
+            Add step
+          </Button>
+        </Tip>
       </div>
     </Form>
   );
@@ -782,12 +965,14 @@ function Form({
   children,
   modified,
   onSave,
-  onReset
+  onReset,
+  onDelete
 }: {
   children: React.ReactNode;
   modified: boolean;
   onSave: () => Promise<boolean>;
-  onReset: () => Promise<boolean>;
+  onReset?: () => Promise<boolean>;
+  onDelete?: () => Promise<boolean>;
 }) {
   const [status, setStatus] = useState<"idle" | "saving" | "saved">("idle");
   const canEdit = useContext(CanEdit);
@@ -802,25 +987,69 @@ function Form({
     >
       {children}
       <div className="flex items-center gap-2 pt-2">
-        <Button
-          type="submit"
-          variant="primary"
-          disabled={!canEdit || status === "saving"}
+        <Tip
+          content={
+            canEdit
+              ? "Save; applies to new messages immediately"
+              : "Read-only: unlock editing with the admin key"
+          }
         >
-          {status === "saving" ? "Saving…" : "Save"}
-        </Button>
-        <Button
-          type="button"
-          variant="secondary"
-          disabled={!canEdit || !modified}
-          icon={<ArrowCounterClockwiseIcon size={14} />}
-          onClick={() => {
-            if (confirm("Discard your edits and restore the plugin's default?"))
-              onReset();
-          }}
-        >
-          Reset to default
-        </Button>
+          <Button
+            type="submit"
+            variant="primary"
+            disabled={!canEdit || status === "saving"}
+          >
+            {status === "saving" ? "Saving…" : "Save"}
+          </Button>
+        </Tip>
+        {onReset && (
+          <Tip
+            content={
+              canEdit
+                ? "Discard your edits and restore the plugin's version"
+                : "Read-only: unlock editing with the admin key"
+            }
+          >
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={!canEdit || !modified}
+              icon={<ArrowCounterClockwiseIcon size={14} />}
+              onClick={() => {
+                if (
+                  confirm(
+                    "Discard your edits and restore the plugin's default?"
+                  )
+                )
+                  onReset();
+              }}
+            >
+              Reset to default
+            </Button>
+          </Tip>
+        )}
+        {onDelete && (
+          <Tip
+            content={
+              canEdit
+                ? "Permanently delete this item you created"
+                : "Read-only: unlock editing with the admin key"
+            }
+          >
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={!canEdit}
+              icon={<TrashIcon size={14} />}
+              onClick={() => {
+                if (confirm("Delete this item? This can't be undone."))
+                  onDelete();
+              }}
+            >
+              Delete
+            </Button>
+          </Tip>
+        )}
         {status === "saved" && (
           <Text size="xs" variant="secondary">
             Saved

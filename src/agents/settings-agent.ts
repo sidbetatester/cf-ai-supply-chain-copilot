@@ -2,6 +2,8 @@ import { Agent, callable, getAgentByName, getCurrentAgent } from "agents";
 import {
   EMPTY_OVERRIDES,
   itemKey,
+  KEBAB_NAME,
+  normalizeOverrides,
   OverridesSchema,
   resolveCatalog,
   SETTINGS_NAME,
@@ -30,10 +32,19 @@ type EditableKind = "skill" | "prompt" | "workflow";
 function parseOverrides(value: unknown): Overrides {
   const result = OverridesSchema.safeParse(value);
   if (!result.success) {
-    // Paths look like ["skills", "<name>", "body"]; report the field, not the map key.
+    // Paths look like ["skills", "<name>", "body"] or ["custom", "skills", "<name>", ...];
+    // report the field (or the name itself), not the map keys.
+    const field = (path: PropertyKey[]) => {
+      const rest = path.slice(path[0] === "custom" ? 3 : 2);
+      return rest.length > 0
+        ? rest.join(".")
+        : path[0] === "custom"
+          ? "name"
+          : "value";
+    };
     throw new Error(
       result.error.issues
-        .map((i) => `${i.path.slice(2).join(".") || "value"}: ${i.message}`)
+        .map((i) => `${field(i.path)}: ${i.message}`)
         .join("; ")
     );
   }
@@ -79,9 +90,14 @@ export class SettingsAgent extends Agent<Env, Overrides> {
     return denySubAgents();
   }
 
+  /** Stored overrides in the current shape (state saved by older versions lacks newer fields). */
+  private get overrides(): Overrides {
+    return normalizeOverrides(this.state);
+  }
+
   /** Bundled plugins with overrides applied. */
   catalog(): Catalog {
-    return resolveCatalog(BUNDLED_PLUGINS, this.state);
+    return resolveCatalog(BUNDLED_PLUGINS, this.overrides);
   }
 
   // ── Access ────────────────────────────────────────────────────────
@@ -144,25 +160,85 @@ export class SettingsAgent extends Agent<Env, Overrides> {
   @callable()
   setEnabled(kind: ItemKind, name: string, enabled: boolean) {
     this.requireEditor();
-    this.assertExists(kind, name);
+    this.findItem(kind, name);
     const key = itemKey(kind, name);
-    const disabled = this.state.disabled.filter((k) => k !== key);
+    const disabled = this.overrides.disabled.filter((k) => k !== key);
     this.setState({
-      ...this.state,
+      ...this.overrides,
       disabled: enabled ? disabled : [...disabled, key]
     });
   }
 
-  /** Replace the override for a skill, prompt or workflow (fields not given keep the bundled value). */
+  /** Create a skill, command or workflow in the Custom plugin. */
+  @callable()
+  create(kind: EditableKind, name: string, fields: Record<string, unknown>) {
+    this.requireEditor();
+    if (typeof name !== "string" || !KEBAB_NAME.test(name) || name.length > 64)
+      throw new Error(
+        "Name must be lowercase letters, numbers and dashes, e.g. supplier-escalation"
+      );
+    const clash = this.nameOwner(kind, name);
+    if (clash)
+      throw new Error(`"${name}" is already used by the ${clash} plugin`);
+    this.saveValidated(kind, name, this.withCustom(kind, name, fields));
+  }
+
+  /**
+   * Save edits: a custom item's full definition, or the override for a bundled
+   * item (fields not given keep the bundled value).
+   */
   @callable()
   update(kind: EditableKind, name: string, fields: Record<string, unknown>) {
     this.requireEditor();
-    this.assertExists(kind, name);
+    const item = this.findItem(kind, name);
     const field = OVERRIDE_FIELD[kind];
-    const next = parseOverrides({
-      ...this.state,
-      [field]: { ...this.state[field], [name]: fields }
-    });
+    this.saveValidated(
+      kind,
+      name,
+      item.custom
+        ? this.withCustom(kind, name, fields)
+        : {
+            ...this.overrides,
+            [field]: { ...this.overrides[field], [name]: fields }
+          }
+    );
+  }
+
+  /** Delete an item created in Settings. */
+  @callable()
+  remove(kind: EditableKind, name: string) {
+    this.requireEditor();
+    if (!this.findItem(kind, name).custom) {
+      throw new Error(
+        "Only items created in Settings can be deleted; disable plugin items instead."
+      );
+    }
+    const next = structuredClone(this.overrides);
+    delete next.custom[OVERRIDE_FIELD[kind]][name];
+    next.disabled = next.disabled.filter((k) => k !== itemKey(kind, name));
+    this.setState(next);
+  }
+
+  /** Re-enable an item and drop its edits (custom items keep their definition). */
+  @callable()
+  reset(kind: ItemKind, name: string) {
+    this.requireEditor();
+    this.findItem(kind, name);
+    const next = structuredClone(this.overrides);
+    next.disabled = next.disabled.filter((k) => k !== itemKey(kind, name));
+    if (kind in OVERRIDE_FIELD)
+      delete next[OVERRIDE_FIELD[kind as EditableKind]][name];
+    this.setState(next);
+  }
+  @callable()
+  resetAll() {
+    this.requireEditor();
+    this.setState(EMPTY_OVERRIDES);
+  }
+
+  /** Validate candidate overrides (schemas, then workflow references) and persist. */
+  private saveValidated(kind: EditableKind, name: string, candidate: unknown) {
+    const next = parseOverrides(candidate);
     if (kind === "workflow") {
       const workflow = resolveCatalog(BUNDLED_PLUGINS, next)
         .flatMap((p) => p.workflows)
@@ -173,32 +249,41 @@ export class SettingsAgent extends Agent<Env, Overrides> {
     this.setState(next);
   }
 
-  /** Drop all edits for one item and re-enable it. */
-  @callable()
-  reset(kind: ItemKind, name: string) {
-    this.requireEditor();
-    this.assertExists(kind, name);
-    const next = structuredClone(this.state);
-    next.disabled = next.disabled.filter((k) => k !== itemKey(kind, name));
-    if (kind in OVERRIDE_FIELD)
-      delete next[OVERRIDE_FIELD[kind as EditableKind]][name];
-    this.setState(next);
+  private withCustom(
+    kind: EditableKind,
+    name: string,
+    fields: Record<string, unknown>
+  ) {
+    const field = OVERRIDE_FIELD[kind];
+    const custom = this.overrides.custom;
+    return {
+      ...this.overrides,
+      custom: { ...custom, [field]: { ...custom[field], [name]: fields } }
+    };
   }
 
-  @callable()
-  resetAll() {
-    this.requireEditor();
-    this.setState(EMPTY_OVERRIDES);
-  }
-
-  private assertExists(kind: ItemKind, name: string) {
-    const exists = BUNDLED_PLUGINS.some((p) =>
+  /** An item (bundled or custom) in the effective catalog; throws if unknown. */
+  private findItem(kind: ItemKind, name: string) {
+    const catalog = this.catalog();
+    const item =
       kind === "plugin"
-        ? p.id === name
-        : p[`${kind}s` as "skills" | "prompts" | "tools" | "workflows"].some(
-            (i) => i.name === name
-          )
-    );
-    if (!exists) throw new Error(`Unknown ${kind} "${name}"`);
+        ? catalog.find((p) => p.id === name) && { custom: false }
+        : catalog
+            .flatMap(
+              (p) => p[`${kind}s`] as { name: string; custom: boolean }[]
+            )
+            .find((i) => i.name === name);
+    if (!item) throw new Error(`Unknown ${kind} "${name}"`);
+    return item;
+  }
+
+  /** The plugin already using `name` in the kind's namespace (skills; or commands = prompts + workflows). */
+  private nameOwner(kind: EditableKind, name: string) {
+    for (const p of this.catalog()) {
+      const items =
+        kind === "skill" ? p.skills : [...p.prompts, ...p.workflows];
+      if (items.some((i) => i.name === name)) return p.name;
+    }
+    return undefined;
   }
 }
