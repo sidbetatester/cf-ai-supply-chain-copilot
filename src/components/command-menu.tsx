@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Badge } from "@cloudflare/kumo";
 import type { CommandInfo } from "../plugins/registry";
 import { parseSlashCommand } from "../shared";
@@ -32,10 +32,15 @@ export function useCommandMenu(
     () => matchCommands(input, commands),
     [input, commands]
   );
-  const [highlight, setHighlight] = useState(0);
+  // The highlight belongs to the input it was set for, so it resets to the
+  // first match whenever the input changes (derived during render).
+  const [selection, setSelection] = useState({ input, index: 0 });
+  const highlight = selection.input === input ? selection.index : 0;
+  const setHighlight = useCallback(
+    (index: number) => setSelection({ input, index }),
+    [input]
+  );
   const [dismissedFor, setDismissedFor] = useState<string>();
-
-  useEffect(() => setHighlight(0), [input]);
 
   const open = matches.length > 0 && dismissedFor !== input;
 
@@ -45,10 +50,10 @@ export function useCommandMenu(
       const selected = matches[highlight];
       switch (e.key) {
         case "ArrowDown":
-          setHighlight((h) => (h + 1) % matches.length);
+          setHighlight((highlight + 1) % matches.length);
           break;
         case "ArrowUp":
-          setHighlight((h) => (h - 1 + matches.length) % matches.length);
+          setHighlight((highlight - 1 + matches.length) % matches.length);
           break;
         case "Tab":
           onComplete(selected, false);
@@ -67,7 +72,7 @@ export function useCommandMenu(
       e.preventDefault();
       return true;
     },
-    [open, matches, highlight, input, onComplete]
+    [open, matches, highlight, setHighlight, input, onComplete]
   );
 
   return { open, matches, highlight, setHighlight, onKeyDown };
