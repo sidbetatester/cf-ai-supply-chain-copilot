@@ -2,6 +2,8 @@
 
 **An AI program-management copilot for hardware supply chain deployments, built on Cloudflare.**
 
+**Live demo:** https://cf-ai-supply-chain-copilot.sidsnextbestmove.workers.dev
+
 A supply chain program manager rolling out hardware to a new PoP (point of presence) juggles POs, supplier ETAs, customs lead time, milestones and a RAID log (Risks, Actions, Issues, Decisions). This app puts all of that behind a chat interface, across multiple projects and chats. You can:
 
 - **Ask about risk:** "What's our biggest schedule risk?" The agent checks every gating PO's landed date (ETA + customs buffer) against the milestone it gates, then explains the gap and proposes mitigations.
@@ -102,7 +104,7 @@ The gear icon opens **Settings**, which customizes plugins without touching thei
 
 Plugin files stay the defaults. A `SettingsAgent` Durable Object stores only overrides, validated with the same Zod schemas as plugin files. One pure resolver (`resolveCatalog` in `src/plugins/catalog.ts`) applies them, on the server for every chat turn and workflow step, and in the browser for the live `/` menu and Settings UI, so both always agree. Workflows are re-checked against the effective catalog: disabling a tool a step uses marks the workflow as unable to run until it's fixed. A running workflow keeps the steps it started with.
 
-> Settings has no authentication: anyone who can open the app can change them. Put the app behind [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) (or add an auth check in `authorize()` in `src/server.ts`) before sharing a deployment beyond reviewers.
+**Access:** Settings are **read-only** by default, so anyone can browse them. To edit, click **Unlock editing** and enter the admin key (the `SETTINGS_ADMIN_KEY` Worker secret). The key is sent once over the Settings WebSocket, compared in constant time, and unlocks only that connection; every write is re-checked on the server, so other viewers stay read-only. With no key configured, editing is disabled entirely. For stricter access (for example, restricting who can open the app at all), put it behind [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/).
 
 ## Run locally
 
@@ -111,18 +113,22 @@ Requires Node.js 20+ and a (free) Cloudflare account. Workers AI calls run again
 ```bash
 npm install
 npx wrangler login
+cp .dev.vars.example .dev.vars   # then set SETTINGS_ADMIN_KEY
 npm run dev
 ```
 
 Open the URL Vite prints (usually http://localhost:5173).
 
-If you authenticate with `CLOUDFLARE_API_TOKEN` in a `.env` file instead of `wrangler login`, also create an empty `.dev.vars`. Otherwise the Cloudflare Vite plugin loads `.env` as Worker secrets, exposing the token to the Worker and copying it into `dist/`.
+Copy `.dev.vars.example` to `.dev.vars` and set `SETTINGS_ADMIN_KEY` to unlock Settings editing locally. Keep a `.dev.vars` file even if you authenticate with `CLOUDFLARE_API_TOKEN` in `.env`: without one, the Cloudflare Vite plugin loads `.env` as Worker secrets, exposing the token to the Worker and copying it into `dist/`.
 
 ## Deploy
 
 ```bash
 npm run deploy
+npx wrangler secret put SETTINGS_ADMIN_KEY
 ```
+
+The second command sets the admin key that unlocks Settings editing. Use a long random value.
 
 ## Try it
 

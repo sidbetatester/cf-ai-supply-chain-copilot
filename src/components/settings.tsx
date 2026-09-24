@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 import type { useAgent } from "agents/react";
 import { Badge, Button, Switch, Text } from "@cloudflare/kumo";
 import {
   ArrowCounterClockwiseIcon,
   ArrowDownIcon,
   ArrowUpIcon,
+  LockSimpleIcon,
   PlusIcon,
   TrashIcon,
   WarningIcon,
@@ -16,6 +17,7 @@ import type {
   EffectivePlugin,
   ItemKind,
   Overrides,
+  SettingsAccess,
   WorkflowStep
 } from "../plugins/catalog";
 
@@ -36,6 +38,9 @@ const SECTIONS = [
   { key: "tools", kind: "tool", label: "Tools" }
 ] as const;
 
+/** Whether this viewer may edit; every editing control reads it. */
+const CanEdit = createContext(false);
+
 const errorMessage = (e: unknown) =>
   e instanceof Error ? e.message : String(e);
 
@@ -55,6 +60,13 @@ export function SettingsPanel({
   }));
   const [error, setError] = useState<string>();
   const [resetAllCount, setResetAllCount] = useState(0);
+  const [access, setAccess] = useState<SettingsAccess>();
+  useEffect(() => {
+    settings.stub
+      .access()
+      .then(setAccess, (e: unknown) => setError(errorMessage(e)));
+  }, [settings]);
+  const canEdit = !!access?.unlocked;
 
   /** Run a Settings RPC, surfacing validation errors from the agent. */
   const run = async (action: () => Promise<unknown>) => {
@@ -72,70 +84,127 @@ export function SettingsPanel({
     run(() => settings.stub.setEnabled(kind, name, enabled));
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-kumo-elevated">
-      <header className="flex items-center justify-between gap-3 px-4 py-3 bg-kumo-base border-b border-kumo-line">
-        <div>
-          <h2 className="text-lg font-semibold text-kumo-default">Settings</h2>
-          <Text size="xs" variant="secondary">
-            Changes apply to new messages immediately. Plugin files stay the
-            defaults.
-          </Text>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="secondary"
-            icon={<ArrowCounterClockwiseIcon size={16} />}
-            onClick={() => {
-              if (confirm("Reset all Settings to the plugin defaults?"))
-                run(() => settings.stub.resetAll()).then(
-                  (ok) => ok && setResetAllCount((n) => n + 1)
-                );
-            }}
-          >
-            Reset all
-          </Button>
-          <Button
-            variant="secondary"
-            shape="square"
-            aria-label="Close settings"
-            icon={<XIcon size={16} />}
-            onClick={onClose}
+    <CanEdit.Provider value={canEdit}>
+      <div className="fixed inset-0 z-50 flex flex-col bg-kumo-elevated">
+        <header className="flex items-center justify-between gap-3 px-4 py-3 bg-kumo-base border-b border-kumo-line">
+          <div>
+            <h2 className="text-lg font-semibold text-kumo-default">
+              Settings
+            </h2>
+            <Text size="xs" variant="secondary">
+              Changes apply to new messages immediately. Plugin files stay the
+              defaults.
+            </Text>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              icon={<ArrowCounterClockwiseIcon size={16} />}
+              disabled={!canEdit}
+              onClick={() => {
+                if (confirm("Reset all Settings to the plugin defaults?"))
+                  run(() => settings.stub.resetAll()).then(
+                    (ok) => ok && setResetAllCount((n) => n + 1)
+                  );
+              }}
+            >
+              Reset all
+            </Button>
+            <Button
+              variant="secondary"
+              shape="square"
+              aria-label="Close settings"
+              icon={<XIcon size={16} />}
+              onClick={onClose}
+            />
+          </div>
+        </header>
+
+        {access && !access.unlocked && (
+          <UnlockBar
+            configured={access.configured}
+            onUnlock={(key) =>
+              run(async () => setAccess(await settings.stub.unlock(key)))
+            }
           />
-        </div>
-      </header>
+        )}
 
-      {error && (
-        <div
-          role="alert"
-          className="px-4 py-2 text-sm bg-red-500/10 text-red-600 dark:text-red-400 border-b border-red-500/20"
-        >
-          {error}
-        </div>
-      )}
+        {error && (
+          <div
+            role="alert"
+            className="px-4 py-2 text-sm bg-red-500/10 text-red-600 dark:text-red-400 border-b border-red-500/20"
+          >
+            {error}
+          </div>
+        )}
 
-      <div className="flex flex-1 min-h-0 flex-col md:flex-row">
-        <nav className="md:w-80 shrink-0 overflow-y-auto border-b md:border-b-0 md:border-r border-kumo-line bg-kumo-base p-3 space-y-4 max-h-[40vh] md:max-h-none">
-          {catalog.map((plugin) => (
-            <PluginList
-              key={plugin.id}
-              plugin={plugin}
+        <div className="flex flex-1 min-h-0 flex-col md:flex-row">
+          <nav className="md:w-80 shrink-0 overflow-y-auto border-b md:border-b-0 md:border-r border-kumo-line bg-kumo-base p-3 space-y-4 max-h-[40vh] md:max-h-none">
+            {catalog.map((plugin) => (
+              <PluginList
+                key={plugin.id}
+                plugin={plugin}
+                selection={selection}
+                onSelect={setSelection}
+                onToggle={toggle}
+              />
+            ))}
+          </nav>
+          <main className="flex-1 min-w-0 overflow-y-auto p-4 md:p-6">
+            <Editor
+              key={resetAllCount}
+              catalog={catalog}
               selection={selection}
-              onSelect={setSelection}
+              settings={settings}
+              run={run}
               onToggle={toggle}
             />
-          ))}
-        </nav>
-        <main className="flex-1 min-w-0 overflow-y-auto p-4 md:p-6">
-          <Editor
-            key={resetAllCount}
-            catalog={catalog}
-            selection={selection}
-            settings={settings}
-            run={run}
-            onToggle={toggle}
-          />
-        </main>
+          </main>
+        </div>
       </div>
+    </CanEdit.Provider>
+  );
+}
+
+/** Read-only notice with the admin-key form that unlocks editing for this connection. */
+function UnlockBar({
+  configured,
+  onUnlock
+}: {
+  configured: boolean;
+  onUnlock: (key: string) => Promise<boolean>;
+}) {
+  const [key, setKey] = useState("");
+  return (
+    <div className="flex flex-wrap items-center gap-3 px-4 py-2 text-sm bg-kumo-control border-b border-kumo-line">
+      <LockSimpleIcon size={16} className="text-kumo-subtle shrink-0" />
+      <span className="text-kumo-default">
+        {configured
+          ? "Read-only. Enter the admin key to edit Settings."
+          : "Read-only. Editing is disabled because no admin key is configured for this deployment."}
+      </span>
+      {configured && (
+        <form
+          className="flex items-center gap-2 ml-auto"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (key && (await onUnlock(key))) setKey("");
+          }}
+        >
+          <input
+            type="password"
+            autoComplete="off"
+            aria-label="Admin key"
+            placeholder="Admin key"
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+            className="px-3 py-1 text-sm rounded-lg border border-kumo-line bg-kumo-base text-kumo-default focus:outline-none focus:ring-1 focus:ring-kumo-ring"
+          />
+          <Button type="submit" variant="primary" size="sm" disabled={!key}>
+            Unlock editing
+          </Button>
+        </form>
+      )}
     </div>
   );
 }
@@ -222,6 +291,7 @@ function Row({
   onSelect: () => void;
   onToggle: (on: boolean) => void;
 }) {
+  const canEdit = useContext(CanEdit);
   return (
     <div
       className={`flex items-center gap-2 rounded-lg px-2 py-1 ${selected ? "bg-kumo-control" : "hover:bg-kumo-control"}`}
@@ -254,7 +324,7 @@ function Row({
       <Switch
         size="sm"
         checked={enabled}
-        disabled={locked}
+        disabled={locked || !canEdit}
         onCheckedChange={onToggle}
         aria-label={`${enabled ? "Disable" : "Enable"} ${label}`}
       />
@@ -279,6 +349,7 @@ function Editor({
   run: Run;
   onToggle: (kind: ItemKind, name: string, enabled: boolean) => void;
 }) {
+  const canEdit = useContext(CanEdit);
   // Bumped on "Reset to default" so the editor reloads the restored content;
   // saves keep the draft (it already matches) so the "Saved" status shows.
   const [resets, setResets] = useState(0);
@@ -306,7 +377,7 @@ function Editor({
         )}
         <Switch
           checked={item.enabled}
-          disabled={kind !== "plugin" && !plugin.enabled}
+          disabled={!canEdit || (kind !== "plugin" && !plugin.enabled)}
           onCheckedChange={(on) => onToggle(kind, name, on)}
           aria-label={item.enabled ? "Disable" : "Enable"}
         />
@@ -713,6 +784,7 @@ function Form({
   onReset: () => Promise<boolean>;
 }) {
   const [status, setStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const canEdit = useContext(CanEdit);
   return (
     <form
       className="space-y-4"
@@ -724,13 +796,17 @@ function Form({
     >
       {children}
       <div className="flex items-center gap-2 pt-2">
-        <Button type="submit" variant="primary" disabled={status === "saving"}>
+        <Button
+          type="submit"
+          variant="primary"
+          disabled={!canEdit || status === "saving"}
+        >
           {status === "saving" ? "Saving…" : "Save"}
         </Button>
         <Button
           type="button"
           variant="secondary"
-          disabled={!modified}
+          disabled={!canEdit || !modified}
           icon={<ArrowCounterClockwiseIcon size={14} />}
           onClick={() => {
             if (confirm("Discard your edits and restore the plugin's default?"))

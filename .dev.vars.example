@@ -1,0 +1,4 @@
+# Copy to .dev.vars for local development (git-ignored).
+# Admin key that unlocks Settings editing. Use a long random value; in
+# production set it with: npx wrangler secret put SETTINGS_ADMIN_KEY
+SETTINGS_ADMIN_KEY=replace-with-a-long-random-value

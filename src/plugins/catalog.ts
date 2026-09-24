@@ -71,6 +71,12 @@ export const EMPTY_OVERRIDES: Overrides = {
 /** Name of the single SettingsAgent instance that stores Overrides. */
 export const SETTINGS_NAME = "global";
 
+/** Whether this deployment allows Settings edits, and whether this connection may make them. */
+export interface SettingsAccess {
+  configured: boolean;
+  unlocked: boolean;
+}
+
 export type ItemKind = "plugin" | "skill" | "tool" | "prompt" | "workflow";
 export const itemKey = (kind: ItemKind, name: string) => `${kind}:${name}`;
 
