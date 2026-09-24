@@ -45,7 +45,6 @@ function replyWith(text: string) {
  */
 export class ChatAgent extends AIChatAgent<Env> {
   maxPersistedMessages = 100;
-  chatRecovery = true;
 
   async onChatMessage(_onFinish: unknown, options?: OnChatMessageOptions) {
     const { projectId, chatId } = parseChatAgentName(this.name);
