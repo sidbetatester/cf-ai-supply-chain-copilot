@@ -75,3 +75,7 @@ npm run deploy
 - `src/dashboard.tsx`: live program dashboard
 
 Built from the [cloudflare/agents-starter](https://github.com/cloudflare/agents-starter) template. See [PROMPTS.md](./PROMPTS.md) for the AI prompts used during development.
+
+## License
+
+MIT © [sidbetatester](https://github.com/sidbetatester). See [LICENSE](./LICENSE); template-derived portions are covered by [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
