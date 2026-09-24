@@ -18,6 +18,7 @@ import {
   TruckIcon
 } from "@phosphor-icons/react";
 import { loadMessages, saveMessages } from "../browser/storage";
+import { notifyUsageChanged } from "../browser/usage";
 import type { AppUIMessage } from "../chat-api";
 import type { CommandInfo, EffectiveWorkflow } from "../plugins/catalog";
 import { parseSlashCommand, type ProjectState } from "../shared";
@@ -189,6 +190,15 @@ const errorText = async (response: Response) => {
   }
 };
 
+/** The transport's error message is the raw body: show its `error` text. */
+const readableError = (message: string) => {
+  try {
+    return (JSON.parse(message) as { error?: string }).error ?? message;
+  } catch {
+    return message || "Something went wrong.";
+  }
+};
+
 /** Loads the chat's saved messages from this browser, then shows it. */
 export function Chat(props: ChatProps) {
   const [initial, setInitial] = useState<AppUIMessage[]>();
@@ -271,6 +281,9 @@ function ChatView({
     if (status === "ready" || status === "error")
       void saveMessages(projectId, chatId, messages);
   }, [messages, status, projectId, chatId]);
+  useEffect(() => {
+    if (status === "ready" || status === "error") notifyUsageChanged();
+  }, [status]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -346,6 +359,7 @@ function ChatView({
       setMessages(history);
       await saveMessages(projectId, chatId, history);
       setRunningWorkflow(false);
+      notifyUsageChanged();
     },
     [messages, setMessages, projectId, chatId, live]
   );
@@ -484,7 +498,7 @@ function ChatView({
               className="flex flex-wrap items-center gap-3 rounded-xl px-4 py-3 text-sm bg-red-500/10 text-red-700 dark:text-red-300 ring-1 ring-red-500/20"
             >
               <span className="flex-1 min-w-0 break-words">
-                {error.message || "Something went wrong."}
+                {readableError(error.message)}
               </span>
               <Tip content="Send the last message again">
                 <Button

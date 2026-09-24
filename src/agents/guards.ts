@@ -36,10 +36,13 @@ export async function isAdminKey(env: Env, key: unknown): Promise<boolean> {
 }
 
 /**
- * Consume one unit of the shared rate limit for `key` (see "ratelimits" in
+ * Consume one unit of a rate limit for `key` (see "ratelimits" in
  * wrangler.jsonc). Returns false when the caller should back off.
  */
-export async function withinRateLimit(env: Env, key: string): Promise<boolean> {
-  const { success } = await env.RATE_LIMITER.limit({ key });
+export async function withinRateLimit(
+  limiter: RateLimit,
+  key: string
+): Promise<boolean> {
+  const { success } = await limiter.limit({ key });
   return success;
 }

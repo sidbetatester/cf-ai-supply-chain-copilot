@@ -8,6 +8,24 @@ import { buildPluginPrompt } from "./plugins/runtime";
 
 export const MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
+/**
+ * Workers AI cost of MODEL in neurons per million tokens (developers.cloudflare.com
+ * /workers-ai/platform/pricing). Update together with MODEL.
+ */
+const NEURONS_PER_M_INPUT = 26_668;
+const NEURONS_PER_M_OUTPUT = 204_805;
+
+/** Neurons consumed by a model response, from its token usage. */
+export const neuronsFor = (usage: {
+  inputTokens?: number;
+  outputTokens?: number;
+}) =>
+  Math.ceil(
+    ((usage.inputTokens ?? 0) * NEURONS_PER_M_INPUT +
+      (usage.outputTokens ?? 0) * NEURONS_PER_M_OUTPUT) /
+      1_000_000
+  );
+
 export type ProjectSnapshot = ReturnType<ProjectStore["snapshot"]>;
 
 export function createModel(env: Env, sessionAffinity?: string) {

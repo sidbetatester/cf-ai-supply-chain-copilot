@@ -1,10 +1,11 @@
 import { routeAgentRequest } from "agents";
-import { handleChat, handleWorkflowStep } from "./chat-api";
+import { handleChat, handleUsage, handleWorkflowStep } from "./chat-api";
 import { demoProject, listProjects } from "./data";
 import { SETTINGS_NAME } from "./plugins/catalog";
 import { BUNDLED_PLUGINS } from "./plugins/registry";
 
 export { SettingsAgent } from "./agents/settings-agent";
+export { UsageLimiter } from "./agents/usage-limiter";
 
 const notFound = (what: string) =>
   new Response(`${what} not found`, { status: 404 });
@@ -31,6 +32,8 @@ export default {
   async fetch(request: Request, env: Env) {
     const { pathname } = new URL(request.url);
 
+    if (request.method === "GET" && pathname === "/api/usage")
+      return handleUsage(request, env);
     if (request.method === "GET") {
       const response = handleGet(pathname);
       if (response) return response;

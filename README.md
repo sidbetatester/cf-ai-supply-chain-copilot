@@ -35,7 +35,9 @@ Worker (stateless for users)
   ├─ POST /api/workflow-step  one workflow step (its skill and tools) → text + project
   ├─ GET  /api/projects[/id]  read-only demo data bundled from data/
   ├─ GET  /api/plugins        bundled plugin catalog
-  └─ SettingsAgent (single Durable Object): admin plugin overrides → effective catalog
+  ├─ GET  /api/usage          today's AI allowance (free-tier budget)
+  ├─ SettingsAgent (single Durable Object): admin plugin overrides → effective catalog
+  └─ UsageLimiter  (single Durable Object): today's AI usage counters
 ```
 
 | Requirement             | Implementation                                                                                                                                                                                                                                                                |
@@ -113,14 +115,15 @@ A `SettingsAgent` Durable Object stores only overrides, validated with the same 
 
 - **No user data on the server:** chats, messages, project changes, reminders and imported projects stay in the user's browser. Every visitor starts from the unmodified demo data.
 - **Nothing can be written to Settings directly:** the SettingsAgent rejects client-sent state (`validateStateChange`); changes go only through validated, admin-checked methods. The SDK's sub-agent route is disabled.
-- **Bounded server work:** a per-client rate limit on AI requests (Workers rate-limit binding), a 512 KB request cap, an 8,000-character message cap, and schema limits on every project field and collection.
+- **Free-tier AI budget:** the app stays inside the Workers AI free allocation (10,000 neurons per day, reset at 00:00 UTC). A `UsageLimiter` Durable Object reserves a conservative estimate before each model call and settles it to the real token usage afterwards, capping the whole app at `AI_DAILY_NEURON_BUDGET` (9,000, leaving headroom for local development) and each visitor at `AI_CLIENT_DAILY_SHARE` (20%). Over budget, requests get a 429 that says when it resets, and the demo banner shows how much of today's allowance is left. It stores only today's counters, keyed by a daily-rotating hash of the IP, and wipes them at the next UTC day.
+- **Bounded server work:** 5 AI requests per minute per visitor and 20 Settings unlock attempts per minute (Workers rate-limit bindings), at most 6 model steps per request, a 512 KB request cap, an 8,000-character message cap, and schema limits on every project field and collection.
 - **Rendering:** LLM output is shown without raw HTML or images and with only `https`/`mailto` links, plus strict security headers and a `script-src 'self'` Content-Security-Policy (`public/_headers`).
 - **Secrets** stay out of git (`.env`, `.dev.vars`), and CI runs with a read-only token.
 - Messages and project data are sent to Workers AI to answer a request and aren't stored.
 
 ## Run locally
 
-Requires Node.js 20+ and a (free) Cloudflare account. Workers AI calls run against your account even in local dev.
+Requires Node.js 20+ and a (free) Cloudflare account. Workers AI calls run against your account even in local dev, and count toward the same free daily allocation.
 
 ```bash
 npm install
@@ -142,6 +145,8 @@ npx wrangler secret put SETTINGS_ADMIN_KEY
 
 The second command sets the admin key that unlocks Settings editing. Use a long random value.
 
+Everything runs on the Workers **Free** plan: Workers, static assets, SQLite-backed Durable Objects, rate-limit bindings and Workers AI (capped by the budget above). If the free Workers limits are ever exceeded, requests fail rather than bill.
+
 ## Try it
 
 1. In **LOS-02**, click **/risk-review**, or ask _"What's our biggest schedule risk right now?"_
@@ -161,6 +166,7 @@ The second command sets the admin key that unlocks Settings editing. Use a long 
 - `src/llm.ts`: model setup and system prompt
 - `src/plugins/`: plugin author API (`define.ts`), bundled loader (`registry.ts`), schemas and effective-catalog resolver (`catalog.ts`), toolset and prompt assembly (`runtime.ts`)
 - `src/agents/settings-agent.ts`: stores and validates Settings overrides and custom items
+- `src/agents/usage-limiter.ts`: daily Workers AI budget (reserve and settle neurons per request)
 - `src/agents/guards.ts`: shared security checks (client state writes, admin key, rate limits)
 - `src/browser/`: IndexedDB storage and React hooks for projects and chats
 - `src/components/`: sidebar, chat, command menu, dashboard, Settings, import dialog, demo banner
